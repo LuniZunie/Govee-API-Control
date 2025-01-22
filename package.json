@@ -1,0 +1,19 @@
+{
+  "name": "govee-lan-control",
+  "version": "1.0.0",
+  "main": "govee.js",
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "start": "node host.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "description": ""
+}
