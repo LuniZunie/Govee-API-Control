@@ -10,8 +10,6 @@ const SECRET = JSON.parse(fs.readFileSync(CONFIG.pointer.secret, 'utf8'));
 const precision = CONFIG.govee.rate_limit.precision;
 const rateLimit = { end: -1, time: Math.round((86400000 / CONFIG.govee.rate_limit.quota + precision / 2) / precision) * precision };
 
-const mem = {};
-
 async function getDevices() {
   return await fetch(`${CONFIG.govee.api}/user/devices`, {
     method: 'GET',
