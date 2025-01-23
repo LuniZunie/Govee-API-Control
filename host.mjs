@@ -3,10 +3,47 @@ import fs from 'fs';
 import fetch from 'node-fetch'; import express from 'express';
 import cors from 'cors'; import bodyParser from 'body-parser';
 
-const read = (path, en = 'utf8') => JSON.parse(fs.readFileSync(path, en));
+const sendToClient = {};
+function read(name, path, keepSecure = false, en = 'utf8') {
+  const o = JSON.parse(fs.readFileSync(path, en));
 
-const CONFIG = read('data/config.json');
-const DEFINE = read(CONFIG.pointer.define), SECRET = read(CONFIG.pointer.secret);
+  const set = (parent, child, path) => {
+    let o = parent;
+    for (let i = 0; i < path.length - 1; i++) {
+      const k = path[i];
+      if (parent[k] === undefined) parent[k] = {};
+      o = parent[k];
+    }
+
+    o[path[path.length - 1]] = child;
+  }
+
+  const get = (o, path) => {
+    for (const k of path) {
+      if (k in o) o = o[k];
+      else return undefined;
+    }
+    return o;
+  }
+
+  const forClient = keepSecure ? {} : (o.for_client ?? {});
+  if (o.for_client) delete o.for_client;
+
+  const q = [ { obj: o, path: [] } ];
+  for (let i = 0; i < q.length; i++) {
+    const { obj, path } = q[i];
+    for (const [ k, v ] of Object.entries(obj)) {
+      const thisPath = [ ...path, k ];
+      if (get(forClient, thisPath)) set(sendToClient, v, [ name, ...thisPath ]);
+      else if (v instanceof Object) q.push({ obj: v, path: thisPath });
+    }
+  }
+
+  return o;
+}
+
+const CONFIG = read('CONFIG',  'data/config.json');
+const DEFINE = read('DEFINE', CONFIG.pointer.define), SECRET = read('SECRET', CONFIG.pointer.secret, true);
 
 const precision = CONFIG.govee.rate_limit.precision;
 const rateLimit = { end: -1, time: Math.round((86400000 / CONFIG.govee.rate_limit.quota + precision / 2) / precision) * precision };
@@ -84,14 +121,11 @@ const app = express();
 app.use(cors()); app.use(bodyParser.json());
 
 app.use('/proxy', async (req, res) => {
-  const { method, path, headers, body } = req; if (!CONFIG.server.proxy.methods.includes(method)) return res.status(400).json(format({ error: 'Invalid method' }, 1));
+  const { method, path, body } = req; if (!CONFIG.server.proxy.methods.includes(method)) return res.status(400).json(format({ error: 'Invalid method' }, 1));
 
   switch (path) { // non-rate limited calls
     case '/init': return res.status(200).json(format(init));
-    case '/data': return res.status(200).json(format({
-      config: { max_stack: CONFIG.govee.rate_limit.max_stack, weather: CONFIG.weather },
-      define: { weather: DEFINE.weather }
-    }));
+    case '/data': return res.status(200).json(format(sendToClient));
     default: { // rate limiter
       if (getCountdown() > 0) return res.status(429).json(format({ error: 'Rate limited' }, 1));
     } break;
@@ -104,9 +138,9 @@ app.use('/proxy', async (req, res) => {
     } break;
     case '/stack': {
       const { sku, device: macAddr, capabilities } = body ?? {}; if (sku === undefined || macAddr === undefined || !Array.isArray(capabilities)) return res.status(400).json(format({ error: 'Invalid body' }, 1));
-      const process = (body ?? {}).process ?? 'parallel'; if (process !== 'parallel' && process !== 'sequential')
+      const process = (body ?? {}).process ?? 'parallel'; if (process !== 'parallel' && process !== 'sequential') return res.status(400).json(format({ error: 'Invalid process' }, 1));
 
-      const capsObj = capabilities.reverse().reduce(([ mapped, existing ], cap, i) => {
+      const capsObj = capabilities.reverse().reduce(([ mapped, existing ], cap) => {
         const id = `${cap.type} ${cap.instance}`;
         if (existing.has(id)) mapped.unshift({ cap, dup: true });
         else {
@@ -126,11 +160,11 @@ app.use('/proxy', async (req, res) => {
         let apiCalls = 0;
         const rtn = [], promises = [];
         for (let i = 0; i < caps.length; i++) {
-          const setReturn = (function(o) { rtn[this] = 0; }).bind(i);
+          const setReturn = (function(o) { rtn[this] = o; }).bind(i);
           setReturn({ status: 0b000, message: 'pending' });
-          
+
           const { dup, cap } = caps[i];
-          if (dup) { setReturn({ status: 0b010, message: 'failure#duplicate', data: { error: 'Duplicated capablity requested' } }); continue; }
+          if (dup) { setReturn({ status: 0b010, message: 'failure#duplicate', data: { error: 'Duplicated capability requested' } }); continue; }
 
           const { type, instance, value } = cap ?? {}; if (type === undefined || instance === undefined) return res.status(400).json(format({ error: 'Invalid capability' }, 1));
           const hasCap = init.devices[index].capabilities.some(test => cap.type === test.type && cap.instance === test.instance);
@@ -145,10 +179,10 @@ app.use('/proxy', async (req, res) => {
             body: JSON.stringify({ requestId: 'uuid', payload: { sku, device: macAddr, capability: { type, instance, value } } }),
           })
             .then(r => r.json()).then(data => setReturn({ status: 0b001, message: 'success', data }))
-            .catch(err => console.error(err) || setReturn({ status: 0b110, message: 'failure_fetch_error', data: err }));
+            .catch(err => console.error(err) || setReturn({ status: 0b110, message: 'failure#fetch_error', data: err }));
 
-          if (process === 'parallel') promises.push(promsie); // execute all fetch requests ASAP
-          else await promise; // wait for fetch request to finish before proceeding to next fetch request 
+          if (process === 'parallel') promises.push(promise); // execute all fetch requests ASAP
+          else await promise; // wait for fetch request to finish before proceeding to next fetch request
         }
 
         if (process === 'parallel') await Promise.allSettled(promises); // wait for fetch requests to finish
@@ -163,17 +197,35 @@ app.use('/proxy', async (req, res) => {
         headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
         body: method === 'POST' ? JSON.stringify(req.body) : undefined,
       })
-        .then(response => response.json()).then(data => {
+        .then(r => r.json()).then(data => {
           rateLimit.end = Date.now() + rateLimit.time;
           return res.status(200).json(format(data));
         })
-        .catch(error => {
-          console.error(error);
+        .catch(err => {
+          console.error(err);
 
           rateLimit.end = Date.now() + rateLimit.time;
-          return res.status(500).json(format({ error: error.message }, 1));
+          return res.status(500).json(format({ error: err.message }, 1));
         });
     } break;
+  }
+});
+
+app.use('/hcpss', async (req, res) => {
+  const { method, path } = req; if (method !== 'GET') return res.status(400).json(format({ error: 'Invalid method' }, 1));
+
+  switch (path) {
+    case '/calendar': {
+      fetch(CONFIG.hcpss.calendar)
+        .then(r => r.text()).then(txt => res.status(200).send(txt))
+        .catch(err => console.error(err) || res.status(500).json(format({ error: err.message }, 1)));
+    } break;
+    case '/status': {
+      fetch(CONFIG.hcpss.status)
+        .then(r => r.text()).then(txt => res.status(200).send(txt))
+        .catch(err => console.error(err) || res.status(500).json(format({ error: err.message }, 1)));
+    } break;
+    default: return res.status(400).json(format({ error: 'Invalid path' }, 1));
   }
 });
 

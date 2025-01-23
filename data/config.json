@@ -41,9 +41,34 @@
       "scene": {
         "rain": "Downpour",
         "thunderstorms": "Lightning",
+        "snow": "Winter",
 
         "#default": "Rainbow"
       }
     }
+  },
+
+  "hcpss": {
+    "calendar": "https://calendarembed.hocoschools.org/calendar/hcpss/month?page=0",
+    "status": "https://status.hcpss.org",
+
+    "start_time": 750,
+    "time_before_school": 120
+  },
+
+  "max_start_time": 1030,
+
+  "for_client": {
+    "govee": {
+      "rate_limit": {
+        "max_stack": true
+      }
+    },
+    "weather": true,
+    "hcpss": {
+      "start_time": true,
+      "time_before_school": true
+    },
+    "max_start_time": true
   }
 }

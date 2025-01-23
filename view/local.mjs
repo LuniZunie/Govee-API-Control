@@ -11,17 +11,40 @@ const util = Object.freeze({
 
   clamp: (v, min, max) => Math.min(Math.max(v, min), max),
 
+  addTime: (t1, t2) => { // format: HHMM (24-hr)
+    let min1 = t1 % 100, min2 = t2 % 100; if (min1 >= 60 || min2 >= 60) return NaN;
+    const hr1 = t1 - min1, hr2 = t2 - min2;
+
+    const min12 = (min1 / 60) + (min2 / 60);
+
+    const hr = hr1 + hr2 + (Math.floor(min12) * 100);
+    const min = min12 < 0 ? ((1 + min12 % 1) * 60) : (min12 % 1 * 60);
+
+    if (hr < 0) return hr - (60 - min) + 100;
+    else return hr + min;
+  },
+
+  formatTime: (code) => { // format: HHMM (24-hr)
+    const hr = code / 100 | 0, min = code % 100;
+    return (hr * 3600000) + (min * 60000);
+  },
+
   proxy: 'http://localhost:3000/proxy',
   client: document.getElementById('output'),
 });
 
 const mem = { countdown: 0 };
 
+function error400() {
+  util.client.innerText = 'Error 400: Bad Request';
+  setTimeout(() => location.reload(), 5000);
+}
+
 const initData = await fetch(`${util.proxy}/data`)
   .then(response => response.json()).then(data => console.log(data) || data)
-  .catch(error => console.error(error) || {});
+  .catch(error => console.error(error) || error400());
 
-const { config: CONFIG, define: DEFINE } = initData.data;
+const { CONFIG, DEFINE } = initData.data;
 mem.countdown = Date.now() + initData.countdown;
 
 const promises = {
@@ -34,12 +57,12 @@ const promises = {
 
         const lookup = await fetch(`${CONFIG.weather.api}/points/${latitude},${longitude}`)
           .then(response => response.json()).then(data => console.log('Point: %o', data) || data.properties.observationStations)
-          .catch(error => console.error(error));
+          .catch(error => console.error(error) || error400());
         if (lookup === undefined) return undefined;
 
         const stations = await fetch(lookup)
           .then(response => response.json()).then(data => console.log('Stations: %o', data) || data.features)
-          .catch(error => console.error(error));
+          .catch(error => console.error(error) || error400());
         if (stations === undefined) return undefined;
 
         const station = stations[0];
@@ -57,7 +80,7 @@ const promises = {
 
         return data;
       })
-      .catch(error => console.error(error) || {});
+      .catch(error => console.error(error) || error400());
   })(),
 }, database = {};
 
@@ -135,3 +158,57 @@ async function update() {
   setTimeout(update, Math.max(mem.countdown, 1000)); // minimum of 500ms delay to not overwork CPU and server
 }
 setTimeout(update, mem.countdown - Date.now());
+
+async function getSchoolStatus() {
+  const date = new Date();
+  const day = date.getDate(); if (day === 0 || day === 6) return false; // Saturday or Sunday
+  const month = date.getMonth(); if (month === 6) return false; // July
+
+  const status = {
+    calendar: fetch(`http://localhost:3000/hcpss/calendar`, { method: 'GET' })
+      .then(r => r.text()).then(function(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        const today = doc.querySelector('table.calendar > tbody > tr > td.active');
+        if (today.classList.contains('closed-day')) return false;
+        else return true; // assume normal operating day
+      })
+      .catch(err => console.error(err) || true), // assume normal operating day
+    code: fetch(`http://localhost:3000/hcpss/status`, { method: 'GET' })
+      .then(r => r.text()).then(function(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        const status = doc.querySelector('section#status-block > div > h2 > span.status-date + span');
+        for (const [ pattern, modifier ] of Object.entries(DEFINE.hcpss.status_codes))
+          if (new RegExp(pattern, 'i').test(status.textContent)) {
+            if (modifier === -1) return false; // schools closed
+            else return +modifier || true; // number of hours to delay with fallback to normal operating day
+          }
+
+        return true; // assume normal operating day
+      })
+      .catch(err => console.error(err) || true), // assume normal operating day
+  };
+
+  await Promise.allSettled(Object.values(status));
+  const { calendar, code } = status;
+  if (calendar === false || code === false) return false; // schools closed
+  else return code; // delayed opening or normal operating day
+}
+
+async function getAlarmTime() {
+  const Δ = (function(status) {
+    if (status === false) return CONFIG.max_start_time; // schools closed, time to turn on no matter what
+
+    const t = util.addTime(CONFIG.hcpss.start_time, -CONFIG.hcpss.time_before_school); // normal start time (school start - time needed before school)
+    if (status === true) return t; // return normal time
+    else return util.addTime(t, status); // return delayed time
+  })(await getSchoolStatus());
+
+  const Δms = util.formatTime(Δ);
+  return new Date().setHours(0, 0, 0, 0).valueOf() + Δms;
+}
+
+console.log(new Date(await getAlarmTime()));
