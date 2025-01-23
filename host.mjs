@@ -16,7 +16,7 @@ async function getDevices() {
     method: 'GET',
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
   })
-    .then(r => r.json()).then(o => o.data)
+    .then(r => r.json()).then(data => data.data)
     .catch(err => ({ error: err.message }));
 }
 
@@ -26,7 +26,7 @@ async function getData(sku, device, path) {
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
     body: JSON.stringify({ requestId: 'uuid', payload: { sku, device } }),
   })
-    .then(r => r.json()).then(o => o.payload.capabilities)
+    .then(r => r.json()).then(data => data.payload.capabilities)
     .catch(err => ({ error: err.message }));
 }
 
