@@ -1,7 +1,7 @@
 {
-  "name": "govee-lan-control",
+  "name": "govee-api-control",
   "version": "1.0.0",
-  "main": "govee.js",
+  "main": "host.mjs",
   "dependencies": {
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
@@ -12,7 +12,7 @@
   "scripts": {
     "start": "node host.mjs"
   },
-  "author": "",
+  "author": "LuniZunie",
   "license": "ISC",
   "keywords": [],
   "description": ""

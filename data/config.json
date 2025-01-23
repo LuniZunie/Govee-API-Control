@@ -1,0 +1,49 @@
+{
+  "pointer": {
+    "define": "data/define.json",
+    "secret": "data/secret.json"
+  },
+
+  "server": {
+    "port": 3000,
+    "proxy": {
+      "methods": [ "GET", "POST" ]
+    }
+  },
+
+  "govee": {
+    "api": "https://openapi.api.govee.com/router/api/v1",
+    "rate_limit": {
+      "quota": 10000,
+      "max_stack": 10,
+
+      "precision": 5000
+    }
+  },
+
+  "weather": {
+    "api": "https://api.weather.gov",
+
+    "temperature": {
+      "range": {
+        "min": -20,
+        "max": 40
+      }
+    },
+    "visibility": {
+      "range": {
+        "min": 0,
+        "max": 16093.44
+      }
+    },
+
+    "present": {
+      "scene": {
+        "rain": "Downpour",
+        "thunderstorms": "Lightning",
+
+        "#default": "Rainbow"
+      }
+    }
+  }
+}
