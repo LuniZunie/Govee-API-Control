@@ -3,9 +3,10 @@ import fs from 'fs';
 import fetch from 'node-fetch'; import express from 'express';
 import cors from 'cors'; import bodyParser from 'body-parser';
 
-const CONFIG = JSON.parse(fs.readFileSync('data/config.json', 'utf8'));
-const DEFINE = JSON.parse(fs.readFileSync(CONFIG.pointer.define, 'utf8'));
-const SECRET = JSON.parse(fs.readFileSync(CONFIG.pointer.secret, 'utf8'));
+const read = (path, en = 'utf8') => JSON.parse(fs.readFileSync(path, en));
+
+const CONFIG = read('data/config.json');
+const DEFINE = read(CONFIG.pointer.define), SECRET = read(CONFIG.pointer.secret);
 
 const precision = CONFIG.govee.rate_limit.precision;
 const rateLimit = { end: -1, time: Math.round((86400000 / CONFIG.govee.rate_limit.quota + precision / 2) / precision) * precision };
@@ -15,8 +16,8 @@ async function getDevices() {
     method: 'GET',
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
   })
-    .then(response => response.json()).then(data => data.data)
-    .catch(error => ({ error: error.message }));
+    .then(r => r.json()).then(o => o.data)
+    .catch(err => ({ error: err.message }));
 }
 
 async function getData(sku, device, path) {
@@ -25,8 +26,8 @@ async function getData(sku, device, path) {
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
     body: JSON.stringify({ requestId: 'uuid', payload: { sku, device } }),
   })
-    .then(response => response.json()).then(data => data.payload.capabilities)
-    .catch(error => ({ error: error.message }));
+    .then(r => r.json()).then(o => o.payload.capabilities)
+    .catch(err => ({ error: err.message }));
 }
 
 let init = {};
@@ -35,10 +36,10 @@ async function INIT() {
   init = { devices, states: [], lookup: {} };
   for (let i = 0; i < devices.length; i++) {
     const device = devices[i];
-    const { sku, device: macAddress } = device ?? {}; if (sku === undefined || macAddress === undefined) return console.error('Invalid device') || false;
+    const { sku, device: macAddr } = device ?? {}; if (sku === undefined || macAddr === undefined) return console.error('Invalid device') || false;
 
-    if (init.lookup[sku] === undefined) init.lookup[sku] = { [macAddress]: i };
-    else init.lookup[sku][macAddress] = i;
+    if (init.lookup[sku] === undefined) init.lookup[sku] = { [macAddr]: i };
+    else init.lookup[sku][macAddr] = i;
 
     const find = { 'devices.capabilities.dynamic_scene lightScene': false, 'devices.capabilities.dynamic_scene diyScene': false };
     for (let j = 0; j < device.capabilities.length; j++) {
@@ -53,16 +54,16 @@ async function INIT() {
     }
 
     if (find['devices.capabilities.dynamic_scene lightScene'] !== false) {
-      const lightScene = await getData(sku, macAddress, 'scenes'); if (lightScene.error) return console.error(lightScene.error) || false;
+      const lightScene = await getData(sku, macAddr, 'scenes'); if (lightScene.error) return console.error(lightScene.error) || false;
       device.capabilities[find['devices.capabilities.dynamic_scene lightScene']] = lightScene[0];
     }
 
     if (find['devices.capabilities.dynamic_scene diyScene']) {
-      const diyScene = await getData(sku, macAddress, 'diy-scenes'); if (diyScene.error) return console.error(diyScene.error) || false;
+      const diyScene = await getData(sku, macAddr, 'diy-scenes'); if (diyScene.error) return console.error(diyScene.error) || false;
       device.capabilities[find['devices.capabilities.dynamic_scene diyScene']] = diyScene[0];
     }
 
-    const state = await getData(sku, macAddress, 'state'); if (state.error) return console.error(state.error) || false;
+    const state = await getData(sku, macAddr, 'state'); if (state.error) return console.error(state.error) || false;
     init.states.push(state);
   }
 
@@ -102,41 +103,58 @@ app.use('/proxy', async (req, res) => {
       return res.status(500).json(format({ error: 'Failed to re-initialize' }, 1));
     } break;
     case '/stack': {
-      const { sku, device, capabilities } = body ?? {}; if (sku === undefined || device === undefined || !Array.isArray(capabilities)) return res.status(400).json(format({ error: 'Invalid body' }, 1));
-      if (capabilities.length > CONFIG.govee.rate_limit.max_stack) return res.status(400).json(format({ error: 'Too many capabilities for one call' }, 1));
+      const { sku, device: macAddr, capabilities } = body ?? {}; if (sku === undefined || macAddr === undefined || !Array.isArray(capabilities)) return res.status(400).json(format({ error: 'Invalid body' }, 1));
+      const process = (body ?? {}).process ?? 'parallel'; if (process !== 'parallel' && process !== 'sequential')
 
-      if (sku in init.lookup) {
-        const index = init.lookup[sku][device]; if (index === undefined) return res.status(400).json(format({ error: 'Invalid device' }, 1));
-
-        let apiCalls = 0;
-        const returnObj = [], promises = [];
-        for (let i = 0; i < capabilities.length; i++) {
-          const capability = capabilities[i];
-          const { type, instance, value } = capability ?? {}; if (type === undefined || instance === undefined) return res.status(400).json(format({ error: 'Invalid capability' }, 1));
-
-          const hasCapability = init.devices[index].capabilities.some(cap => cap.type === capability.type && cap.instance === capability.instance);
-          if (!hasCapability) {
-            returnObj[i] = { status: -1, message: 'failure', data: { error: 'Invalid capability' } };
-            continue;
-          } else apiCalls++;
-
-          console.log(`\n${new Date().toLocaleString()}: Setting %s for %s to %o\nSKU: %s\nMAC_ADDRESS: %s\n`, instance, type, value, sku, device);
-
-          returnObj[i] = { status: 0, message: 'pending' };
-          const o = returnObj[i];
-          const promise = fetch(CONFIG.govee.api + capability.path, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
-            body: JSON.stringify({ requestId: 'uuid', payload: { sku, device, capability: { type, instance, value } } }),
-          })
-            .then(response => response.json()).then(data => { o.status = 1; o.message = 'success'; o.data = data })
-            .catch(error => { o.status = -1; o.message = 'failure'; o.data = error });
-
-          promises.push(promise);
+      const capsObj = capabilities.reverse().reduce(([ mapped, existing ], cap, i) => {
+        const id = `${cap.type} ${cap.instance}`;
+        if (existing.has(id)) mapped.unshift({ cap, dup: true });
+        else {
+          existing.add(id);
+          mapped.unshift({ cap, dup: false });
         }
 
+        return [ mapped, existing ];
+      }, [ [], new Set() ]); // later duplicate capabilities have priority as it should act as if there was no duplicate
+
+      if (capsObj[1].size > CONFIG.govee.rate_limit.max_stack) return res.status(400).json(format({ error: 'Too many capabilities for one call' }, 1));
+      const caps = capsObj[0];
+
+      if (sku in init.lookup) {
+        const index = init.lookup[sku][macAddr]; if (index === undefined) return res.status(400).json(format({ error: 'Invalid device' }, 1));
+
+        let apiCalls = 0;
+        const rtn = [], promises = [];
+        for (let i = 0; i < caps.length; i++) {
+          const setReturn = (function(o) { rtn[this] = 0; }).bind(i);
+          setReturn({ status: 0b000, message: 'pending' });
+          
+          const { dup, cap } = caps[i];
+          if (dup) { setReturn({ status: 0b010, message: 'failure#duplicate', data: { error: 'Duplicated capablity requested' } }); continue; }
+
+          const { type, instance, value } = cap ?? {}; if (type === undefined || instance === undefined) return res.status(400).json(format({ error: 'Invalid capability' }, 1));
+          const hasCap = init.devices[index].capabilities.some(test => cap.type === test.type && cap.instance === test.instance);
+          if (!hasCap) { setReturn({ status: 0b100, message: 'failure#missing_capability', data: { error: 'Device does not have requested capability' } }); continue; }
+          else apiCalls++;
+
+          console.log(`\n${new Date().toLocaleString()}: Setting %o for %o to %o\nSKU: %o\nMAC_ADDRESS: %o\n`, instance, type, value, sku, macAddr);
+
+          const promise = fetch(CONFIG.govee.api + cap.path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
+            body: JSON.stringify({ requestId: 'uuid', payload: { sku, device: macAddr, capability: { type, instance, value } } }),
+          })
+            .then(r => r.json()).then(data => setReturn({ status: 0b001, message: 'success', data }))
+            .catch(err => console.error(err) || setReturn({ status: 0b110, message: 'failure_fetch_error', data: err }));
+
+          if (process === 'parallel') promises.push(promsie); // execute all fetch requests ASAP
+          else await promise; // wait for fetch request to finish before proceeding to next fetch request 
+        }
+
+        if (process === 'parallel') await Promise.allSettled(promises); // wait for fetch requests to finish
+
         rateLimit.end = Date.now() + rateLimit.time * apiCalls;
-        return res.status(200).json(format(returnObj));
+        return res.status(200).json(format(rtn));
       } else return res.status(400).json(format({ error: 'Invalid SKU' }, 1));
     } break;
     default: {
