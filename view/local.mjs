@@ -95,7 +95,7 @@ async function updateCall() {
         })
       })
         .then(response => response.json()).then(data => mem.countdown = data.countdown)
-        .catch(error => console.error(error));
+        .catch(error => { console.error(error); mem.countdown = 0; });
   }
   const capabilities = [];
 
@@ -125,7 +125,7 @@ async function updateCall() {
       })
     })
       .then(response => response.json()).then(data => mem.countdown = data.countdown)
-      .catch(error => console.error(error));
+      .catch(error => { console.error(error); mem.countdown = 0; });
 
   return undefined;
 }
