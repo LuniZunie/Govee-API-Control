@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Govee Light Control</title>
+    <style>
+      body {
+        background-color: #111;
+        color: #fff;
+      }
+    </style>
+
+    <script>
+      const span = document.createElement('span');
+      span.innerHTML = "<%= json %>";
+
+      window.imported = Object.freeze(JSON.parse(span.textContent));
+    </script>
+    <script type='module' src='/js/client.mjs'></script>
+  </head>
+  <body>
+    <pre id='output'></pre>
+  </body>
+</html>

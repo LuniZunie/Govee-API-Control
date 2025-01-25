@@ -11,8 +11,8 @@ function read(name, path, keepSecure = false, en = 'utf8') {
     let o = parent;
     for (let i = 0; i < path.length - 1; i++) {
       const k = path[i];
-      if (parent[k] === undefined) parent[k] = {};
-      o = parent[k];
+      if (o[k] === undefined) o[k] = {};
+      o = o[k];
     }
 
     o[path[path.length - 1]] = child;
@@ -34,7 +34,7 @@ function read(name, path, keepSecure = false, en = 'utf8') {
     const { obj, path } = q[i];
     for (const [ k, v ] of Object.entries(obj)) {
       const thisPath = [ ...path, k ];
-      if (get(forClient, thisPath)) set(sendToClient, v, [ name, ...thisPath ]);
+      if (get(forClient, thisPath) === true) set(sendToClient, v, [ name, ...thisPath ]);
       else if (v instanceof Object) q.push({ obj: v, path: thisPath });
     }
   }
@@ -42,25 +42,25 @@ function read(name, path, keepSecure = false, en = 'utf8') {
   return o;
 }
 
-const CONFIG = read('CONFIG',  'data/config.json');
-const DEFINE = read('DEFINE', CONFIG.pointer.define), SECRET = read('SECRET', CONFIG.pointer.secret, true);
+const constant = read('constant', 'data/constant.json');
+const config = read('config', constant.file.map.config), secret = read('secret', constant.file.map.secret, true);
 
-const precision = CONFIG.govee.rate_limit.precision;
-const rateLimit = { end: -1, time: Math.round((86400000 / CONFIG.govee.rate_limit.quota + precision / 2) / precision) * precision };
+const precision = config.api.throttle.time_precision;
+const rateLimit = { end: -1, time: Math.round((86400000 / config.api.throttle.quota + precision / 2) / precision) * precision };
 
 async function getDevices() {
-  return await fetch(`${CONFIG.govee.api}/user/devices`, {
+  return await fetch(`${constant.api.govee.location}/user/devices`, {
     method: 'GET',
-    headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
+    headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
   })
     .then(r => r.json()).then(data => data.data)
     .catch(err => ({ error: err.message }));
 }
 
 async function getData(sku, device, path) {
-  return await fetch(`${CONFIG.govee.api}/device/${path}`, {
+  return await fetch(`${constant.api.govee.location}/device/${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
+    headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
     body: JSON.stringify({ requestId: 'uuid', payload: { sku, device } }),
   })
     .then(r => r.json()).then(data => data.payload.capabilities)
@@ -120,23 +120,29 @@ function format(data, flatten = false) {
 const app = express();
 app.use(cors()); app.use(bodyParser.json());
 
-app.use('/proxy', async (req, res) => {
-  const { method, path, body } = req; if (!CONFIG.server.proxy.methods.includes(method)) return res.status(400).json(format({ error: 'Invalid method' }, 1));
+app.set('view engine', 'ejs');
+app.use(express.static('script'));
+
+app.get('/', (req, res) => {
+  res.render('index', { json: JSON.stringify(format(sendToClient)) });
+});
+
+app.use(config.api.path + config.api.govee.path, async (req, res) => {
+  const { method, path, body } = req; if (!config.api.govee.methods.includes(method)) return res.status(400).json(format({ error: 'Invalid method' }, 1));
 
   switch (path) { // non-rate limited calls
-    case '/init': return res.status(200).json(format(init));
-    case '/data': return res.status(200).json(format(sendToClient));
+    case config.api.govee.map.devices.path: return res.status(200).json(format(init));
     default: { // rate limiter
       if (getCountdown() > 0) return res.status(429).json(format({ error: 'Rate limited' }, 1));
     } break;
   }
 
   switch (path) { // rate limited calls
-    case '/re-init': {
+    case config.api.govee.map.refresh_devices.path: {
       if (await INIT()) return res.status(200).json(format(init));
       return res.status(500).json(format({ error: 'Failed to re-initialize' }, 1));
     } break;
-    case '/stack': {
+    case config.api.govee.map.controller.path: {
       const { sku, device: macAddr, capabilities } = body ?? {}; if (sku === undefined || macAddr === undefined || !Array.isArray(capabilities)) return res.status(400).json(format({ error: 'Invalid body' }, 1));
       const process = (body ?? {}).process ?? 'parallel'; if (process !== 'parallel' && process !== 'sequential') return res.status(400).json(format({ error: 'Invalid process' }, 1));
 
@@ -151,7 +157,7 @@ app.use('/proxy', async (req, res) => {
         return [ mapped, existing ];
       }, [ [], new Set() ]); // later duplicate capabilities have priority as it should act as if there was no duplicate
 
-      if (capsObj[1].size > CONFIG.govee.rate_limit.max_stack) return res.status(400).json(format({ error: 'Too many capabilities for one call' }, 1));
+      if (capsObj[1].size > config.api.throttle.controller_requests) return res.status(400).json(format({ error: 'Too many capabilities for one call' }, 1));
       const caps = capsObj[0];
 
       if (sku in init.lookup) {
@@ -173,9 +179,9 @@ app.use('/proxy', async (req, res) => {
 
           console.log(`\n${new Date().toLocaleString()}: Setting %o for %o to %o\nSKU: %o\nMAC_ADDRESS: %o\n`, instance, type, value, sku, macAddr);
 
-          const promise = fetch(CONFIG.govee.api + cap.path, {
+          const promise = fetch(constant.api.govee.location + cap.path, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
+            headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
             body: JSON.stringify({ requestId: 'uuid', payload: { sku, device: macAddr, capability: { type, instance, value } } }),
           })
             .then(r => r.json()).then(data => setReturn({ status: 0b001, message: 'success', data }))
@@ -191,37 +197,21 @@ app.use('/proxy', async (req, res) => {
         return res.status(200).json(format(rtn));
       } else return res.status(400).json(format({ error: 'Invalid SKU' }, 1));
     } break;
-    default: {
-      fetch(CONFIG.govee.api + path, {
-        method: method,
-        headers: { 'Content-Type': 'application/json', 'Govee-API-Key': SECRET.govee.api_key },
-        body: method === 'POST' ? JSON.stringify(req.body) : undefined,
-      })
-        .then(r => r.json()).then(data => {
-          rateLimit.end = Date.now() + rateLimit.time;
-          return res.status(200).json(format(data));
-        })
-        .catch(err => {
-          console.error(err);
-
-          rateLimit.end = Date.now() + rateLimit.time;
-          return res.status(500).json(format({ error: err.message }, 1));
-        });
-    } break;
+    default: return res.status(400).json(format({ error: 'Invalid path' }, 1));
   }
 });
 
-app.use('/hcpss', async (req, res) => {
-  const { method, path } = req; if (method !== 'GET') return res.status(400).json(format({ error: 'Invalid method' }, 1));
+app.use(config.api.path + config.api.hcpss.path, async (req, res) => {
+  const { method, path, body } = req; if (!config.api.hcpss.methods.includes(method)) return res.status(400).json(format({ error: 'Invalid method' }, 1));
 
   switch (path) {
-    case '/calendar': {
-      fetch(CONFIG.hcpss.calendar)
+    case config.api.hcpss.map.calendar.path: {
+      fetch(constant.api.hcpss.calendar.location)
         .then(r => r.text()).then(txt => res.status(200).send(txt))
         .catch(err => console.error(err) || res.status(500).json(format({ error: err.message }, 1)));
     } break;
-    case '/status': {
-      fetch(CONFIG.hcpss.status)
+    case config.api.hcpss.map.status.path: {
+      fetch(constant.api.hcpss.status.location)
         .then(r => r.text()).then(txt => res.status(200).send(txt))
         .catch(err => console.error(err) || res.status(500).json(format({ error: err.message }, 1)));
     } break;
@@ -229,4 +219,4 @@ app.use('/hcpss', async (req, res) => {
   }
 });
 
-app.listen(CONFIG.server.port, () => console.log(`Proxy server running at http://localhost:${CONFIG.server.port}`));
+app.listen(config.server.port, () => console.log(`Proxy server running at http://localhost:${config.server.port}`));

@@ -5,12 +5,13 @@
   "dependencies": {
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
+    "ejs": "^3.1.10",
     "express": "^4.21.2",
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {},
   "scripts": {
-    "start": "node host.mjs"
+    "start": "node app.mjs"
   },
   "author": "LuniZunie",
   "license": "ISC",

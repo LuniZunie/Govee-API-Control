@@ -1,74 +1,234 @@
 {
-  "pointer": {
-    "define": "data/define.json",
-    "secret": "data/secret.json"
-  },
-
   "server": {
-    "port": 3000,
-    "proxy": {
-      "methods": [ "GET", "POST" ]
-    }
+    "port": 3000
   },
 
-  "govee": {
-    "api": "https://openapi.api.govee.com/router/api/v1",
-    "rate_limit": {
+  "api": {
+    "path": "/api",
+
+    "govee": {
+      "path": "/govee",
+
+      "methods": [ "GET", "POST" ],
+      "map": {
+        "devices": {
+          "path": "/init",
+          "rate_limited": false
+        },
+        "refresh_devices": {
+          "path": "/re-init",
+          "rate_limited": true
+        },
+
+        "controller": {
+          "path": "/control",
+          "rate_limited": true
+        }
+      }
+    },
+
+    "hcpss": {
+      "path": "/hcpss",
+
+      "methods": [ "GET" ],
+      "map": {
+        "calendar": {
+          "path": "/calendar",
+          "rate_limited": false
+        },
+        "status": {
+          "path": "/status",
+          "rate_limited": false
+        }
+      }
+    },
+
+    "throttle": {
       "quota": 10000,
-      "max_stack": 10,
+      "controller_requests": 10,
 
-      "precision": 5000
+      "time_precision": 5000
     }
   },
 
-  "weather": {
-    "api": "https://api.weather.gov",
+  "source": {
+    "weather": {
+      "present": {
+        "scene": {
+          "list": [
+            { "condition": "thunderstorms", "scene": "Lightning" },
+            { "condition": "snow", "scene": "Winter" },
+            { "condition": "rain", "scene": "Downpour" }
+          ]
+        }
+      },
 
-    "temperature": {
-      "range": {
-        "min": -20,
-        "max": 40
+      "temperature": {
+        "range": {
+          "min": -20,
+          "max": 40
+        }
+      },
+      "visibility": {
+        "range": {
+          "min": -1609.344,
+          "max": 16093.44
+        }
       }
     },
-    "visibility": {
-      "range": {
-        "min": 0,
-        "max": 16093.44
+
+    "luminary": {
+      "sun": {
+        "rise": {
+          "start": {
+            "phenomenon": "Begin Civil Twilight",
+            "offset": 0
+          },
+          "end": {
+            "phenomenon": "Rise",
+            "offset": 0
+          }
+        },
+        "set": {
+          "start": {
+            "phenomenon": "Set",
+            "offset": 0
+          },
+          "end": {
+            "phenomenon": "End Civil Twilight",
+            "offset": 0
+          }
+        }
+      },
+
+      "moon": {
+        "rise": {
+          "start": {
+            "phenomenon": "Rise",
+            "offset": 0
+          },
+          "end": {
+            "phenomenon": "Rise",
+            "offset": 0
+          }
+        },
+        "set": {
+          "start": {
+            "phenomenon": "Set",
+            "offset": 0
+          },
+          "end": {
+            "phenomenon": "Set",
+            "offset": 0
+          }
+        }
       }
     },
 
-    "present": {
-      "scene": {
-        "rain": "Downpour",
-        "thunderstorms": "Lightning",
-        "snow": "Winter",
-
-        "#default": "Rainbow"
+    "hcpss": {
+      "start": {
+        "time": 750,
+        "offset": -120
       }
     }
   },
 
-  "hcpss": {
-    "calendar": "https://calendarembed.hocoschools.org/calendar/hcpss/month?page=0",
-    "status": "https://status.hcpss.org",
+  "device": {
+    "phase": {
+      "list": [
+        {
+          "name": "wind_down",
+          "time": {
+            "start": 2200,
+            "end": 2230
+          },
+          "scenes": [ "Sleep" ]
+        },
+        {
+          "name": "daylight",
+          "time": {
+            "start": "school.start",
+            "end": "sunset.start"
+          }
+        },
+        {
+          "name": "sleep",
+          "time": {
+            "start": 2230,
+            "end": 1030
+          },
+          "scenes": [ "SleepLightsOff" ]
+        },
+        {
+          "name": "sunset",
+          "time": {
+            "start": "sunset.start",
+            "end": "sunset.end"
+          }
+        },
+        {
+          "name": "moonlight",
+          "time": {
+            "start": "moonrise.start",
+            "end": "moonset.end"
+          },
+          "scenes": [ "Moonlight" ]
+        },
+        {
+          "name": "night",
+          "time": {
+            "start": "sunset.end",
+            "end": "sunrise.start"
+          },
+          "scenes": [ "Starry Sky", "Aurora", "Meteor shower" ]
+        }
+      ],
+      "default": "daylight",
 
-    "start_time": 750,
-    "time_before_school": 120
+      "data": {
+        "sunset": {
+          "color": {
+            "r": 251,
+            "g": 86,
+            "b": 7
+          }
+        }
+      }
+    },
+    "scene": {
+      "duration": {
+        "range": {
+          "min": 5,
+          "max": 30
+        }
+      }
+    },
+
+    "use": {
+      "index": 0
+    }
   },
-
-  "max_start_time": 1030,
 
   "for_client": {
-    "govee": {
-      "rate_limit": {
-        "max_stack": true
+    "api": {
+      "path": true,
+      "client": {
+        "path": true,
+        "map": true
+      },
+      "govee": {
+        "path": true,
+        "map": true
+      },
+      "hcpss": {
+        "path": true,
+        "map": true
+      },
+      "throttle": {
+        "controller_requests": true
       }
     },
-    "weather": true,
-    "hcpss": {
-      "start_time": true,
-      "time_before_school": true
-    },
-    "max_start_time": true
+    "source": true,
+    "device": true
   }
 }
