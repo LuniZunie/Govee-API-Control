@@ -1,62 +1,28 @@
+import { Time, Angle, Coord, RGB, util_client, util, proto } from './utility.mjs';
+proto.import('Number', 'Object', 'Array.prototype');
+
+import DisplayNumber from './display_number.mjs';
+
 const { data: { constant, config }, countdown } = window.imported;
 
-const util = Object.freeze({
-  deg2rad: d => d * (Math.PI / 180), rad2deg: r => r * (180 / Math.PI),
-  coordDist: function(lat1, lon1, lat2, lon2) {
-    const φ1 = util.deg2rad(lat1), φ2 = util.deg2rad(lat2);
-    const Δφ = util.deg2rad(lat2 - lat1), Δλ = util.deg2rad(lon2 - lon1);
-    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return c * 6371;
-  },
+const testTime = { time: 0, init: Date.now() };
+window.setTestTime = function(hr = 'now', min = 0, sec = 0, ms = 0) {
+  if (hr === 'now') { const d = new Date(); hr = d.getHours(), min = d.getMinutes(), sec = d.getSeconds(), ms = d.getMilliseconds(); }
 
-  clamp: (v, min, max) => Math.min(Math.max(v, min), max),
+  testTime.time = (hr * 3600000) + (min * 60000) + (sec * 1000) + ms;
+  testTime.init = Date.now();
+};
+{ const d = new Date(); window.setTestTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()); }
 
-  addTime: (t1, t2) => { // format: HHMM (24-hr)
-    let min1 = t1 % 100, min2 = t2 % 100; if (min1 >= 60 || min2 >= 60) return NaN;
-    const hr1 = t1 - min1, hr2 = t2 - min2;
-
-    const min12 = (min1 / 60) + (min2 / 60);
-
-    const hr = hr1 + hr2 + (Math.floor(min12) * 100);
-    const min = min12 < 0 ? ((1 + min12 % 1) * 60) : (min12 % 1 * 60);
-
-    if (hr < 0) return hr - (60 - min) + 100;
-    else return hr + min;
-  },
-  formatTime: (code) => { // format: HHMM (24-hr)
-    const hr = code / 100 | 0, min = code % 100;
-    return (hr * 3600000) + (min * 60000);
-  },
-
-  findScene(device, sceneName) {
-    let scene;
-    for (const inst of [ 'lightScene', 'diyScene' ]) {
-      const cap = device.capabilities.find(c => c?.type === 'devices.capabilities.dynamic_scene' && c?.instance === inst); if (cap === undefined) continue;
-      const opt = cap.parameters.options.find(opt => opt?.name === sceneName); if (opt === undefined) continue;
-
-      scene = { cap, opt };
-      break;
-    }
-
-    return scene;
-  },
-
-  client: document.getElementById('output'),
-});
+const output = document.getElementById('output');
 
 const memory = {
-  countdown: Date.now() + countdown,
-  schoolStart: null, location: {},
-  luminaryData: { date: null },
+  timer: Date.now() + countdown,
   sceneChange: { phase: null, time: 0, scene: null }
-}, common = {
-  api: location.origin + config.api.path,
-  apiGovee: location.origin + config.api.path + config.api.govee.path,
 };
 
 function error400() {
-  util.client.innerText = 'Error 400: Bad Request';
+  output.innerText = 'Error 400: Bad Request';
   setTimeout(() => location.reload(), 5000);
 }
 
@@ -65,9 +31,10 @@ const promises = {
     if (navigator.geolocation) {
       let callback;
       const promise = new Promise(res => callback = res);
-      navigator.geolocation.getCurrentPosition(async function success(position) {
+      async function success(position) {
         const { latitude, longitude } = position.coords;
         memory.location = { latitude, longitude };
+        sessionStorage.setItem('location', JSON.stringify({ latitude, longitude }));
 
         const lookup = await fetch(`${constant.api.weather.location}/points/${latitude},${longitude}`)
           .then(response => response.json()).then(data => console.log('Point: %o', data) || data.properties.observationStations)
@@ -80,17 +47,22 @@ const promises = {
         if (stations === undefined) return undefined;
 
         const station = stations[0];
-        console.log('Closest station: %o', `${station.properties.name} [${station.properties.stationIdentifier}] (${util.coordDist(latitude, longitude, ...station.geometry.coordinates.reverse()).toFixed(2)} km)`);
+        console.log('Closest station: %o', `${station.properties.name} [${station.properties.stationIdentifier}] (${Coord.calc.dist(latitude, longitude, ...station.geometry.coordinates.reverse()).toFixed(2)} km)`);
         return callback(`${station.id}/observations/latest`);
-      }, console.error);
+      }
+
+      if (sessionStorage.getItem('location')) {
+        const { latitude, longitude } = JSON.parse(sessionStorage.getItem('location'));
+        success({ coords: { latitude, longitude } });
+      } else navigator.geolocation.getCurrentPosition(success, console.error);
       return promise;
     } else return undefined;
   })(),
   init: (async function() {
-    return await fetch(common.apiGovee + config.api.govee.map.devices.path, { method: 'GET' })
+    return await fetch(util.getApiPath(config, 'govee', 'devices'), { method: 'GET' })
       .then(response => response.json()).then(({ data }) => {
         console.log('Initialization: %o', data);
-        util.client.innerText = JSON.stringify(data, null, 2);
+        output.innerText = JSON.stringify(data, null, 2);
 
         return data;
       })
@@ -102,193 +74,187 @@ for (const [ k, promise ] of Object.entries(promises))
   promise.then(data => console.log(`Promise "${k}" resolved with: %o`, data) || (database[k] = data));
 await Promise.all(Object.values(promises));
 
-async function updateCall(updatePromises) {
+async function updateCall(updatePromises, dev_mode = false) {
   let device;
   if ('index' in config.device.use) device = database.init.devices[config.device.use.index]; // get specific device
   else if ('sku' in config.device.use && 'mac_address' in config.device.use)
     device = database.init.devices.find(d => d.sku === config.device.use.sku && d.device === config.device.use.mac_address); // get specific device
   device ??= database.init.devices[0]; // default to first device
 
-  updatePromises.push(updateSchoolStart()); updatePromises.push(updateLuminaryData()); // parallel call to update start time and sun/moon data
-
-  let phaseName = 'sleep', phasePercent = null; // default to off
-  if (memory.luminaryData.data !== undefined && memory.schoolStart !== undefined) {
-    const solar = (function(sundata) {
-      const { rise, set } = config.source.luminary.sun;
-
-      const rtn = { rise: {}, set: {} };
-      for (const data of sundata) {
-        let { phen, time } = data; time = +time.replace(/\D/g, ''); // remove non-digits
-
-        if (rise.start.phenomenon === phen) rtn.rise.start = util.addTime(time, rise.start.offset);
-        if (rise.end.phenomenon === phen) rtn.rise.end = util.addTime(time, rise.end.offset);
-
-        if (set.start.phenomenon === phen) rtn.set.start = util.addTime(time, set.start.offset);
-        if (set.end.phenomenon === phen) rtn.set.end = util.addTime(time, set.end.offset);
-      }
-
-      return rtn;
-    })(memory.luminaryData.data.properties.data.sundata);
-
-    const lunar = (function(moondata) {
-      const { rise, set } = config.source.luminary.moon;
-
-      const rtn = { rise: {}, set: {} };
-      for (const data of moondata) {
-        let { phen, time } = data; time = +time.replace(/\D/g, ''); // remove non-digits
-
-        if (rise.start.phenomenon === phen) rtn.rise.start = util.addTime(time, rise.start.offset);
-        if (rise.end.phenomenon === phen) rtn.rise.end = util.addTime(time, rise.end.offset);
-
-        if (set.start.phenomenon === phen) rtn.set.start = util.addTime(time, set.start.offset);
-        if (set.end.phenomenon === phen) rtn.set.end = util.addTime(time, set.end.offset);
-      }
-
-      return rtn;
-    })(memory.luminaryData.data.properties.data.moondata);
-
-    const date = new Date(); // get current time
-    phaseName = config.device.phase.list
-      .find((function(phase) {
-        let { start, end } = phase.time;
-        if (typeof start === 'string') start = this.var[start]; if (!this.valid(start)) return false;
-        if (typeof end === 'string') end = this.var[end]; if (!this.valid(end)) return false;
-
-        // check if current time is within phase
-        if (start > end && (this.now >= start || this.now < end)) return this.setPercent(start, end, true); // cross midnight
-        else if (this.now >= start && this.now < end) return this.setPercent(start, end, false);
-      }).bind({
-        var: {
-          "school.start": memory.schoolStart,
-
-          "sunrise.start": solar.rise.start, "sunrise.end": solar.rise.end, "sunset.start": solar.set.start, "sunset.end": solar.set.end,
-          "moonrise.start": lunar.rise.start, "moonrise.end": lunar.rise.end, "moonset.start": lunar.set.start, "moonset.end": lunar.set.end,
-        },
-        valid(t) { return Number.isInteger(t) && t >= 0 && t <= 2400 && t % 100 < 60; },
-        setPercent(start, end, crossMidnight) {
-          const convert = t => t % 100 + Math.floor(t / 100) * 60; start = convert(start); end = convert(end); // convert to minutes
-
-          const now = date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60 + date.getMilliseconds() / 60000; // more precise percentage
-          if (crossMidnight) {
-            const len = 1440 - start + end; // 1440 minutes in a day
-            if (now < start) phasePercent = (1440 - start + now) / len;
-            else phasePercent = (now - start) / len;
-          } else phasePercent = (now - start) / (end - start);
-
-          return 1;
-        },
-        now: date.getHours() * 100 + date.getMinutes(),
-      }))?.name ?? config.device.phase.default; // default fallback
+  const date = new Date(); // get current time
+  {
+    const offset = date.valueOf() - testTime.init;
+    const time = testTime.time + offset;
+    date.setHours(time / 3600000 | 0, time / 60000 % 60 | 0, time / 1000 % 60 | 0, time % 1000);
   }
 
-  if (phasePercent !== null) console.log(`${new Date().toLocaleString()}: %o (%s)`, phaseName, `${(phasePercent * 100).toFixed(2)}%`);
-  else console.log(`${new Date().toLocaleString()}: calibrating...`);
+  const { phase, progress, sources } = await getPhase(date); // get current phase and progress
+  if (phase === undefined) return; // skip if phase is undefined
 
-  const phase = config.device.phase.list.find(p => p.name === phaseName);
-  if (phase.scenes || phase.scene) {
-    const scenes = phase.scenes ?? [ phase.scene ]; // single scene or multiple scenes
-    if (memory.sceneChange.phase !== phaseName || (phase.scenes && Date.now() >= memory.sceneChange.time)) {
-      let { min, max } = config.device.scene.duration.range; (min = util.formatTime(min)), (max = util.formatTime(max));
-      memory.sceneChange.time = Date.now() + Math.floor(Math.random() * (max - min + 1)) + min;
+  const display = getDisplayAccessor(phase), // get display accessor
+        scenes = display('scenes'); // get scenes
 
-      const sceneName = scenes[Math.floor(Math.random() * scenes.length)]; const scene = util.findScene(device, sceneName);
-      if (scene !== undefined) {
-        if (sceneName === memory.sceneChange.scene) return; // skip if same scene`
+  if (scenes && (memory.sceneChange.time !== null && Date.now() >= memory.sceneChange.time)) { // scene change
+    const scene = scenes.weightedRandom(scenes.map(s => s.weight ?? 1)), // get random scene based on weight
+          deviceScene = util_client.findScene(device, scene.name); // find scene in device capabilities
 
-        return await fetch(common.apiGovee + config.api.govee.map.controller.path, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sku: device.sku, device: device.device,
-            capabilities: [ { path: '/device/control', type: scene.cap.type, instance: scene.cap.instance, value: scene.opt.value } ],
-          })
-        })
-          .then(response => response.json()).then(data => { memory.countdown = data.countdown; memory.sceneChange.phase = phaseName; memory.sceneChange.scene = sceneName; })
-          .catch(error => { console.error(error); memory.countdown = 0; });
-      }
+    if (deviceScene === undefined) return console.error('Scene %o not found in device capabilities', scene.name);
+
+    let end;
+    if ('duration' in scene && 'min' in scene.duration && 'max' in scene.duration) {
+      const t = Time.from.Date(date),
+            tMn = Time.to.Date(Time.calc.add(t, Time.from.string(scene.duration.min)), date),
+            tMx = Time.to.Date(Time.calc.add(t, Time.from.string(scene.duration.max)), date);
+
+      end = new Date(Number.standardize(Math.random(), tMn, tMx) | 0);
     }
+
+    if (memory.sceneChange.scene === scene.name) return; // skip if same scene
+    else
+      return fetch(util.getApiPath(config, 'govee', 'controller'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sku: device.sku, device: device.device,
+          capabilities: [ { path: '/device/control', type: deviceScene.cap.type, instance: deviceScene.cap.instance, value: deviceScene.scene.value } ],
+          dev_mode,
+        }),
+      })
+        .then(response => response.json())
+        .then(data => {
+          memory.timer = Date.now() + data.countdown;
+
+          memory.sceneChange.scene = scene.name;
+          if (end) {
+            console.log('Duration: %s', end - date);
+            memory.sceneChange.time = end;
+          }
+        })
+        .catch(err => {
+          memory.timer = Date.now();
+          console.error(err);
+        });
   } else {
-    delete memory.sceneChange.phase; delete memory.sceneChange.scene;
-    switch (phaseName) {
-      case 'daylight': { // daylight mode, adjust lights based on weather
-        const observed = await fetch(database.station).then(r => r.json()).then(v => v.properties).catch(err => console.error(err)); if (observed === undefined) return;
-        const { temperature: { value: tempRAW }, visibility: { value: visRAW }, cloudLayers: cloudsRAW, presentWeather: weatherRAW } = observed; // get raw relevant readings
+    memory.sceneChange.scene = null;
+    memory.sceneChange.time = 0;
+    switch (phase.id_display) {
+      case 'sunlight > daytime':
+      case 'sunlight > sunset': {
+        const data = {
+          segment: util.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'segment'),
+          rgb: util.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'rgb'),
+          brightness: util.findCapability(device, 'segment_color_setting', 'segmentedBrightness').parameters.fields.find(f => f.fieldName === 'brightness'),
+        };
 
-        { // weather
-          const weather = weatherRAW.map(ev => ev.weather); // get weather condition of each weather event
+        const segments = Array.from({ length: data.segment.elementRange.max - data.segment.elementRange.min }).map(() => ({}));
+        { // outside temperature segment control
+          { // color temperature
+            const deviceRange = data.rgb.range;
+            if (deviceRange) {
+              const configRange = config.source.weather.temperature;
+              const normal = Number.normalize(sources.weather.temperature.value, configRange.min, configRange.max);
 
-          const scene = config.source.weather.present.scene.list.find(s => weather.includes(s.condition))?.scene; // get scene based on weather condition
-          const value = scene ? util.findScene(device, scene) : undefined; // find scene in device capabilities
-          if (value)
-            return await fetch(common.apiGovee + config.api.govee.map.controller.path, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                sku: device.sku, device: device.device,
-                capabilities: [ { path: '/device/control', type: value.cap.type, instance: value.cap.instance, value: value.opt.value } ],
-              })
-            })
-              .then(response => response.json()).then(data => memory.countdown = data.countdown)
-              .catch(error => { console.error(error); memory.countdown = 0; });
-        }
+              const constantRange = constant.script.temperature_to_rgb.temperature;
+              const standard = Number.standardize(1 - normal, constantRange.min, constantRange.max);
 
-        const capabilities = [];
-        { // temperature
-          const deviceRange = device.capabilities.find(c => c?.type === 'devices.capabilities.color_setting' && c?.instance === 'colorTemperatureK')?.parameters?.range;
-          if (deviceRange) {
-            const configRange = config.source.weather.temperature.range;
-            const normal = util.clamp((tempRAW - configRange.min) / (configRange.max - configRange.min), 0, 1);
-            const value = Math.round((normal * (deviceRange.max - deviceRange.min) + deviceRange.min) * deviceRange.precision) / deviceRange.precision;
+              const rgb = RGB.to.color(RGB.from.temp(standard));
+              config.device.segment.clockwise.bottom.forEach(i => segments[i].rgb = rgb);
+            }
+          }
 
-            capabilities.push({ path: '/device/control', type: 'devices.capabilities.color_setting', instance: 'colorTemperatureK', value });
+          { // visibility
+            const deviceRange = data.brightness.range;
+            if (deviceRange) {
+              const configRange = config.source.weather.visibility;
+              const normal = Number.normalize(sources.weather.visibility.value, configRange.min, configRange.max);
+
+              const brightness = Number.standardize(normal, deviceRange.min, deviceRange.max, deviceRange.precision);
+              config.device.segment.clockwise.bottom.forEach(i => segments[i].brightness = brightness);
+            }
           }
         }
 
-        { // visibility
-          const deviceRange = device.capabilities.find(c => c?.type === 'devices.capabilities.range' && c?.instance === 'brightness')?.parameters?.range;
-          if (deviceRange) {
-            const configRange = config.source.weather.visibility.range;
-            const normal = util.clamp((visRAW - configRange.min) / (configRange.max - configRange.min), 0, 1);
-            const value = Math.round((normal * (deviceRange.max - deviceRange.min) + deviceRange.min) * deviceRange.precision) / deviceRange.precision;
+        if ('moonlight' in progress) { // moonlight segment control
+          const segment = (function(pos, i) {
+            const list = [ ...pos.left, ...pos.top, ...pos.right ];
+            return segments[list[i * list.length | 0]];
+          })(config.device.segment.clockwise, progress.moonlight);
 
-            capabilities.push({ path: '/device/control', type: 'devices.capabilities.range', instance: 'brightness', value });
+          const frac = Number.normalize(+sources.luminary.properties.data.fracillum.replace(/\D/g, ''), 0, 100);
+          segment.brightness = Number.standardize(frac, data.brightness.range.min, data.brightness.range.max, data.brightness.range.precision);
+          segment.rgb = RGB.to.color(display('color', 'moon'));
+        }
+
+        if ('daytime > sunlight' in progress) { // sun segment control
+          const segment = (function(pos, i) {
+            const list = [ ...pos.left, ...pos.top, ...pos.right ];
+            return segments[list[i * list.length | 0]];
+          })(config.device.segment.clockwise, progress['daytime > sunlight']);
+
+          segment.brightness = data.brightness.range.max;
+          segment.rgb = RGB.to.color(display('color', 'sun'));
+        }
+
+        { // cloud segment control
+          const clouds = util_client.getCloudData(constant, sources.weather.cloudLayers);
+          const clearMinMax = clouds
+            .map(a => [ 1 - a.range.min, 1 - a.range.max ])
+            .reduce((p, n) => [ p[0] * n[0], p[1] * n[1] ], [ 1, 1 ]);
+
+          for (const segment of segments) {
+            if (segment.rgb === undefined) {
+              let rgb, brightness;
+
+              const clear = Number.standardize(Math.random(), clearMinMax[0], clearMinMax[1]);
+              if (Math.random() < clear) { // clear sky segment
+                rgb = RGB.to.color(display('color', 'sky'));
+                brightness = 'sunset' in progress ? 1 - (progress.sunset * 0.9) : 1;
+              } else { // cloud segment
+                rgb = RGB.to.color(display('color', 'cloud'));
+
+                const pm = Number.standardize(Math.random(), -0.1, 0.1);
+                brightness = Number.standardize(1 - clear + pm, 0.7, 0.9);
+              }
+
+              segment.rgb = rgb;
+              segment.brightness = Number.standardize(brightness, data.brightness.range.min, data.brightness.range.max, data.brightness.range.precision);
+            }
           }
         }
+
+        const max = data.segment.size.max,
+              template = { path: '/device/control', type: 'devices.capabilities.segment_color_setting', instance: null, value: { segment: [] } },
+              capabilities = segments.reduce((caps, seg, i) => {
+                const add = k => {
+                  const cap = caps.find(c => c.value[k] === seg[k]);
+                  if (cap && cap.value.segment.length < max) cap.value.segment.push(i);
+                  else {
+                    const newCap = JSON.parse(JSON.stringify(template));
+                    newCap.instance = k === 'rgb' ? 'segmentedColorRgb' : 'segmentedBrightness';
+
+                    newCap.value.segment.push(i);
+                    newCap.value[k] = seg[k];
+
+                    return caps.push(newCap);
+                  }
+                };
+
+                add('rgb'), add('brightness');
+                return caps;
+              }, []);
 
         if (capabilities.length)
-          return await fetch(common.apiGovee + config.api.govee.map.controller.path, {
+          return fetch(util.getApiPath(config, 'govee', 'controller'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sku: device.sku, device: device.device, capabilities })
+            body: JSON.stringify({ sku: device.sku, device: device.device, capabilities, process: 'sequential', dev_mode }),
           })
-            .then(response => response.json()).then(data => memory.countdown = data.countdown)
-            .catch(error => { console.error(error); memory.countdown = 0; });
-      } break;
-      case 'sunset': { // sunset mode, adjust lights based on cloud cover
-        const { r, g, b } = config.device.phase.data.sunset.color;
-        const rgb = ((r & 0xFF) << 16) + ((g & 0xFF) << 8) + ((b & 0xFF) << 0);
-
-        let brightness;
-        {
-          const deviceRange = device.capabilities.find(c => c?.type === 'devices.capabilities.range' && c?.instance === 'brightness')?.parameters?.range;
-          const normal = 1 - util.clamp(phasePercent, 0, 1);
-
-          brightness = Math.round((normal * (deviceRange.max - deviceRange.min) + deviceRange.min) * deviceRange.precision) / deviceRange.precision;
-        }
-
-        return await fetch(common.apiGovee + config.api.govee.map.controller.path, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sku: device.sku, device: device.device,
-            capabilities: [
-              { path: '/device/control', type: 'devices.capabilities.color_setting', instance: 'colorRgb', value: rgb },
-              { path: '/device/control', type: 'devices.capabilities.range', instance: 'brightness', value: brightness },
-            ],
-          })
-        })
-          .then(response => response.json()).then(data => memory.countdown = data.countdown)
-          .catch(error => { console.error(error); memory.countdown = 0; });
+            .then(response => response.json())
+            .then(data => { memory.timer = Date.now() + data.countdown; })
+            .catch(err => {
+              console.error(err);
+              memory.timer = Date.now();
+            });
       } break;
     }
   }
@@ -296,72 +262,187 @@ async function updateCall(updatePromises) {
   return undefined;
 }
 
-async function update() {
+async function update(dev_mode = false) {
   const updatePromises = [];
-  await updateCall(updatePromises);
+  await updateCall(updatePromises, dev_mode);
 
   await Promise.allSettled(updatePromises);
 
-  setTimeout(update, Math.max(memory.countdown, 1000)); // minimum of 500ms delay to not overwork CPU and server
+  memory.updateTimer = setTimeout(update, Math.max(memory.timer - Date.now(), 3000)); // minimum of 3000ms delay to not overwork CPU and server
 }
-setTimeout(update, memory.countdown - Date.now());
+memory.updateTimer = setTimeout(update, memory.timer - Date.now());
 
-async function updateLuminaryData() {
-  const date = new Date(); date.setHours(0, 0, 0, 0);
-  const { luminaryData } = memory; if (luminaryData.date === date) return false;
-
-  const opts = { date: date.toISOString().split('T')[0], coords: `${memory.location.latitude},${memory.location.longitude}`, tz: date.getTimezoneOffset() / -60 };
-  await fetch(`${constant.api.luminary.location}?${new URLSearchParams(opts)}`)
-    .then(response => response.json()).then(data => memory.luminaryData = { date, data })
-    .catch(error => console.error(error));
-
-  return true;
-}
-
-async function updateSchoolStart() {
-  const status = await getSchoolStatus(); if (status === false) return memory.schoolStart = -1; // schools closed, time to turn on no matter what
-
-  const t = util.addTime(config.source.hcpss.start.time, config.source.hcpss.start.offset); // normal start time
-  if (status === true) return memory.schoolStart = t; // return normal time
-  else return memory.schoolStart = util.addTime(t, status); // return delayed time
-}
-
-async function getSchoolStatus() {
+async function getSchoolData() {
   const date = new Date();
-  const day = date.getDate(); if (day === 0 || day === 6) return false; // Saturday or Sunday
-  const month = date.getMonth(); if (month === 6) return false; // July
+  const d = date.getDay(), m = date.getMonth() + 1;
+  if (d === 0 || d === 6 || m === 7) return false; // Saturday, Sunday, or July
 
-  const status = {
-    calendar: fetch(common.api + config.api.hcpss.path + config.api.hcpss.map.calendar.path, { method: 'GET' })
-      .then(r => r.text()).then(function(html) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
+  const fetcher = async path => fetch(util.getApiPath(config, 'hcpss', path), { method: 'GET' })
+    .then(response => response.text())
+    .then(html => new DOMParser().parseFromString(html, 'text/html'));
 
-        const today = doc.querySelector('table.calendar > tbody > tr > td.active');
-        if (today.classList.contains('closed-day')) return false;
-        else return true; // assume normal operating day
-      })
+  const promises = {
+    calendar: fetcher('calendar')
+      .then(doc => !doc.querySelector('table.calendar > tbody > tr > td.active').classList.contains('closed-day'))
       .catch(err => console.error(err) || true), // assume normal operating day
-    code: fetch(common.api + config.api.hcpss.path + config.api.hcpss.map.status.path, { method: 'GET' })
-      .then(r => r.text()).then(function(html) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-
+    code: fetcher('status')
+      .then(doc => {
         const status = doc.querySelector('section#status-block > div > h2 > span.status-date + span');
-        for (const code of constant.api.hcpss.status_code.list) {
-          if (new RegExp(code.pattern, 'i').test(status.textContent)) {
-            if (code.closure) return false; // schools closed
-            else return +code.delay || true; // number of hours to delay with fallback to normal operating day
-          }
-        }
-
+        for (const code of constant.api.hcpss.status_code)
+          if (new RegExp(code.pattern, 'i').test(status.textContent))
+            return code.closure ? false : +code.delay || true; // schools closed or delayed opening (with fallback to normal operating day)
         return true; // assume normal operating day
       })
       .catch(err => console.error(err) || true), // assume normal operating day
   };
 
-  await Promise.allSettled(Object.values(status));
-  const { calendar, code } = status;
-  if (calendar === false || code === false) return false; // schools closed
-  else return code; // delayed opening or normal operating day
+  const fulfilled = await Promise.allSettled(Object.values(promises)),
+        statuses = Object.fromEntries(Object.keys(promises).map((k, i) => [ k, fulfilled[i].value ]));
+
+  let status = statuses.calendar && statuses.code; // schools closed, delayed opening, or normal operating day
+  if (status === false) return null; // schools closed
+  else if (status === true) status = '+0'; // normal operating day
+
+  const t = Time.from.string(config.source.hcpss.start.time), // normal start time
+        Δt1 = Time.from.string(config.source.hcpss.start.offset), // wake up offset
+        Δt2 = Time.from.string(status); // delayed opening time
+
+  return Time.to.Date(Time.calc.add(t, Δt1, Δt2), date); // return start time
 }
+
+async function getLuminaryData(date = new Date()) {
+  const { latitude, longitude } = JSON.parse(sessionStorage.getItem('location'));
+
+  const params = new URLSearchParams({ date: date.toISOString().split('T')[0], coords: `${latitude},${longitude}`, tz: date.getTimezoneOffset() / -60});
+  const data = await fetch(`${constant.api.luminary.location}?${params}`)
+    .then(response => response.json())
+    .catch(error => console.error(error));
+
+  const get = (function(type) {
+    const data = this.data.properties.data[`${type}data`],
+          conditions = config.source.luminary[type];
+
+    const check = (o, k, phen, t, con) => {
+      if (con.phenomenon === phen) {
+        const Δt = Time.from.string(con.offset);
+        o[k] = Time.to.Date(Time.calc.add(t, Δt), date);
+      }
+    };
+
+    const rtn = { rise: {}, set: {} };
+    for (let { phen, time } of data) {
+      time = Time.from.string(time);
+      check(rtn.rise, 'start', phen, time, conditions.rise.start); check(rtn.rise, 'end', phen, time, conditions.rise.end);
+      check(rtn.set, 'start', phen, time, conditions.set.start); check(rtn.set, 'end', phen, time, conditions.set.end);
+    }
+    return rtn;
+  }).bind({ data });
+
+  return { sun: get('sun'), moon: get('moon'), properties: data.properties };
+}
+
+async function getWeatherData() {
+  return await fetch(database.station)
+    .then(r => r.json())
+    .then(v => v.properties)
+    .catch(err => console.error(err));
+}
+
+async function getPhase(date = new Date()) {
+  const promises = {
+    school: getSchoolData(),
+    luminary: getLuminaryData(date),
+    weather: getWeatherData(),
+  };
+
+  const fulfilled = await Promise.allSettled(Object.values(promises)),
+        sources = Object.fromEntries(Object.keys(promises).map((k, i) => [ k, fulfilled[i].value ]));
+
+  const progress = {};
+  const checkCondition = (function(group, con) {
+    const id = group + (con.name ? ` > ${con.name}` : '');
+    if ('time' in con) {
+      let { start, end } = con.time;
+      start = this.var.time[start] ?? Time.to.Date(Time.from.string(start));
+      end = this.var.time[end] ?? Time.to.Date(Time.from.string(end));
+
+      if (start > end && !(date >= start || date < end)) return false;
+      else if (start <= end && !(date >= start && date < end)) return false;
+
+      const percent = start <= end ?
+        (date - start) / (end - start) :
+        (date < start ? 1440 - start + date : date - start) / (1440 - start + end);
+
+      progress[id] = percent;
+    }
+
+    if ('weather' in con) {
+      if ('present' in con.weather && !this.var.weather.present.includes(con.weather.present))
+        return false;
+    }
+
+    return true;
+  }).bind({ var: {
+    time: {
+      "school.start": sources.school,
+
+      "sunrise.start": sources.luminary.sun.rise.start, "sunrise.end": sources.luminary.sun.rise.end,
+      "sunset.start": sources.luminary.sun.set.start, "sunset.end": sources.luminary.sun.set.end,
+
+      "moonrise.start": sources.luminary.moon.rise.start, "moonrise.end": sources.luminary.moon.rise.end,
+      "moonset.start": sources.luminary.moon.set.start, "moonset.end": sources.luminary.moon.set.end,
+    },
+    weather: {
+      present: sources.weather.presentWeather.map(ev => ev.weather),
+    },
+  }, });
+
+  const phase = config.device.phase
+    .map((phase, i) => {
+      let valid = false;
+      for (let j = 0; j < phase.conditions.length; j++) {
+        const con = checkCondition(phase.group, phase.conditions[j]) && j;
+        if (valid === false) valid = con; // index of first valid condition
+      }
+
+      if (phase.display === undefined || !(phase.display in config.device.display)) return undefined;
+      else if (valid === false) return undefined;
+
+      const con = phase.conditions[valid];
+      return {
+        id: phase.group + (con.name ? ` > ${con.name}` : ''),
+        id_display: phase.display + (con.sub_display ? ` > ${con.sub_display}` : ''),
+
+        group: phase.group, display: phase.display,
+        name: con.name, sub_display: con.sub_display,
+        priority: con.priority ?? phase.priority, index: i,
+      };
+    })
+    .filter(p => p !== undefined)
+    .sort((a, b) => (b.priority - a.priority) || (a.index - b.index))[0]; // sort by priority (descending) then index (ascending)
+
+  window.output = { phase: phase.id, display: phase.id_display };
+  return { phase, progress, sources };
+}
+
+function getDisplayAccessor(phase) {
+  const { display, sub_display } = phase;
+
+  const root = config.device.display[display].root ?? {},
+        sub = config.device.display[display].sub?.[sub_display] ?? {};
+
+  return (function(...ks) { return Object.safeGet(this.sub, ...ks) ?? Object.safeGet(this.root, ...ks); }).bind({ root, sub });
+}
+
+async function timer() {
+  DisplayNumber(memory.timer - Date.now());
+  requestAnimationFrame(timer);
+}
+timer();
+
+window.addEventListener('keyup', function(event) {
+  if (event.key === 'Enter' && event.ctrlKey) {
+    clearTimeout(memory.updateTimer);
+    update(true);
+  }
+});

@@ -8,72 +8,56 @@
 
     "govee": {
       "path": "/govee",
-
       "methods": [ "GET", "POST" ],
-      "map": {
-        "devices": {
-          "path": "/init",
-          "rate_limited": false
-        },
-        "refresh_devices": {
-          "path": "/re-init",
-          "rate_limited": true
-        },
 
-        "controller": {
-          "path": "/control",
-          "rate_limited": true
-        }
+      "devices": {
+        "path": "/init",
+        "rate_limited": false
+      },
+      "refresh_devices": {
+        "path": "/re-init",
+        "rate_limited": true
+      },
+
+      "controller": {
+        "path": "/control",
+        "rate_limited": true
       }
     },
 
     "hcpss": {
       "path": "/hcpss",
-
       "methods": [ "GET" ],
-      "map": {
-        "calendar": {
-          "path": "/calendar",
-          "rate_limited": false
-        },
-        "status": {
-          "path": "/status",
-          "rate_limited": false
-        }
+
+      "calendar": {
+        "path": "/calendar",
+        "rate_limited": false
+      },
+      "status": {
+        "path": "/status",
+        "rate_limited": false
       }
     },
 
-    "throttle": {
+    "rate_limit": {
       "quota": 10000,
-      "controller_requests": 10,
+      "precision": 5000,
 
-      "time_precision": 5000
+      "max_controller_requests": 20,
+
+      "dev_mode": true
     }
   },
 
   "source": {
     "weather": {
-      "present": {
-        "scene": {
-          "list": [
-            { "condition": "thunderstorms", "scene": "Lightning" },
-            { "condition": "snow", "scene": "Winter" },
-            { "condition": "rain", "scene": "Downpour" }
-          ]
-        }
-      },
-
       "temperature": {
-        "range": {
-          "min": -20,
-          "max": 40
-        }
+        "min": -20,
+        "max": 40
       },
       "visibility": {
-        "range": {
-          "min": -1609.344,
-          "max": 16093.44
-        }
+        "min": 0,
+        "max": 10
       }
     },
 
@@ -82,21 +66,21 @@
         "rise": {
           "start": {
             "phenomenon": "Begin Civil Twilight",
-            "offset": 0
+            "offset": "+0"
           },
           "end": {
             "phenomenon": "Rise",
-            "offset": 0
+            "offset": "+0"
           }
         },
         "set": {
           "start": {
             "phenomenon": "Set",
-            "offset": 0
+            "offset": "+0"
           },
           "end": {
             "phenomenon": "End Civil Twilight",
-            "offset": 0
+            "offset": "+0"
           }
         }
       },
@@ -105,21 +89,21 @@
         "rise": {
           "start": {
             "phenomenon": "Rise",
-            "offset": 0
+            "offset": "+0"
           },
           "end": {
             "phenomenon": "Rise",
-            "offset": 0
+            "offset": "+0"
           }
         },
         "set": {
           "start": {
             "phenomenon": "Set",
-            "offset": 0
+            "offset": "+0"
           },
           "end": {
             "phenomenon": "Set",
-            "offset": 0
+            "offset": "+0"
           }
         }
       }
@@ -127,79 +111,209 @@
 
     "hcpss": {
       "start": {
-        "time": 750,
-        "offset": -120
+        "time": "7:50",
+        "offset": "-1:20"
       }
     }
   },
 
   "device": {
-    "phase": {
-      "list": [
-        {
-          "name": "wind_down",
-          "time": {
-            "start": 2200,
-            "end": 2230
-          },
-          "scenes": [ "Sleep" ]
-        },
-        {
-          "name": "daylight",
-          "time": {
-            "start": "school.start",
-            "end": "sunset.start"
-          }
-        },
-        {
-          "name": "sleep",
-          "time": {
-            "start": 2230,
-            "end": 1030
-          },
-          "scenes": [ "SleepLightsOff" ]
-        },
-        {
-          "name": "sunset",
-          "time": {
-            "start": "sunset.start",
-            "end": "sunset.end"
-          }
-        },
-        {
-          "name": "moonlight",
-          "time": {
-            "start": "moonrise.start",
-            "end": "moonset.end"
-          },
-          "scenes": [ "Moonlight" ]
-        },
-        {
-          "name": "night",
-          "time": {
-            "start": "sunset.end",
-            "end": "sunrise.start"
-          },
-          "scenes": [ "Starry Sky", "Aurora", "Meteor shower" ]
-        }
-      ],
-      "default": "daylight",
-
-      "data": {
-        "sunset": {
-          "color": {
-            "r": 251,
-            "g": 86,
-            "b": 7
-          }
-        }
+    "segment": {
+      "clockwise": {
+        "top": [ 5, 4, 3, 2 ],
+        "right": [ 1, 0 ],
+        "bottom": [ 11, 10, 9, 8 ],
+        "left": [ 7, 6 ]
+      },
+      "counter_clockwise": {
+        "top": [ 2, 3, 4, 5 ],
+        "right": [ 0, 1 ],
+        "bottom": [ 8, 9, 10, 11 ],
+        "left": [ 6, 7 ]
       }
     },
-    "scene": {
-      "duration": {
-        "range": {
-          "min": 5,
-          "max": 30
+
+    "phase": [
+      {
+        "group": "sleep",
+        "display": "sleep",
+        "conditions": [
+          {
+            "time": { "start": "22:30", "end": "9:30" }
+          }
+        ],
+        "priority": 2
+      },
+      {
+        "group": "unwind",
+        "display": "unwind",
+        "conditions": [
+          {
+            "time": { "start": "22", "end": "22:30" }
+          }
+        ],
+        "priority": 2
+      },
+
+      {
+        "group": "severe_weather",
+        "display": "severe_weather",
+        "conditions": [],
+        "priority": 5
+      },
+      {
+        "group": "weather",
+        "display": "weather",
+        "conditions": [
+          {
+            "name": "thunderstorm",
+            "sub_display": "thunderstorm",
+            "time": { "start": "sunrise.end", "end": "sunset.start" },
+            "weather": { "present": "thunderstorms" }
+          },
+          {
+            "name": "snow",
+            "sub_display": "snow",
+            "time": { "start": "sunrise.end", "end": "sunset.start" },
+            "weather": { "present": "snow" }
+          },
+          {
+            "name": "rain",
+            "sub_display": "rain",
+            "time": { "start": "sunrise.end", "end": "sunset.start" },
+            "weather": { "present": "rain" }
+          }
+        ],
+        "priority": 4
+      },
+
+      {
+        "group": "daytime",
+        "display": "sunlight",
+        "conditions": [
+          {
+            "name": "school",
+            "sub_display": "daytime",
+            "time": { "start": "school.start", "end": "sunset.start" },
+            "priority": 3
+          },
+          {
+            "name": "sunlight",
+            "sub_display": "daytime",
+            "time": { "start": "sunrise.end", "end": "sunset.start" }
+          }
+        ],
+        "priority": 1
+      },
+      {
+        "group": "sunset",
+        "display": "sunlight",
+        "conditions": [
+          {
+            "sub_display": "sunset",
+            "time": { "start": "sunset.start", "end": "sunset.end" }
+          }
+        ],
+        "priority": 1
+      },
+      {
+        "group": "nighttime",
+        "display": "nighttime",
+        "conditions": [
+          {
+            "time": { "start": "sunset.end", "end": "sunrise.start" }
+          }
+        ],
+        "priority": 1
+      },
+      {
+        "group": "moonlight",
+        "conditions": [
+          {
+            "time": { "start": "moonrise.end", "end": "moonset.start" }
+          }
+        ],
+        "priority": 0
+      }
+    ],
+
+    "display": {
+      "unwind": {
+        "root": {
+          "scenes": [
+            { "name": "Sleep" }
+          ]
+        }
+      },
+      "sleep": {
+        "root": {
+          "scenes": [
+            { "name": "SleepLightsOff" }
+          ]
+        }
+      },
+
+      "weather": {
+        "sub": {
+          "thunderstorm": {
+            "scenes": [
+              { "name": "Lightning" }
+            ]
+          },
+          "snow": {
+            "scenes": [
+              { "name": "Winter" }
+            ]
+          },
+          "rain": {
+            "scenes": [
+              { "name": "Downpour" }
+            ]
+          }
+        }
+      },
+
+      "sunlight": {
+        "root": {
+          "color": {
+            "sun": { "r": 255, "g": 255, "b": 0 },
+            "moon": { "r": 255, "g": 255, "b": 255 }
+          }
+        },
+        "sub": {
+          "daytime": {
+            "color": {
+              "sky": { "r": 15, "g": 103, "b": 208 },
+              "cloud": { "r": 180, "g": 180, "b": 180 }
+            }
+          },
+          "sunset": {
+            "color": {
+              "sky": { "r": 251, "g": 86, "b": 7 },
+              "cloud": { "r": 223, "g": 129, "b": 30 }
+            }
+          }
+        }
+      },
+      "nighttime": {
+        "root": {
+          "scenes": [
+            {
+              "name": "Starry Sky",
+              "weight": 100,
+              "duration": { "min": "+0:15", "max": "+1" }
+            },
+            {
+              "name": "Aurora",
+              "weight": 3,
+              "duration": { "min": "+0:03", "max": "+0:15" }
+            },
+            {
+              "name": "Meteor shower",
+              "weight": 1,
+              "duration": { "min": "+0:00:30", "max": "+0:02" }
+            }
+          ]
         }
       }
     },
@@ -209,23 +323,14 @@
     }
   },
 
-  "for_client": {
+  "send_to_client": {
     "api": {
       "path": true,
-      "client": {
-        "path": true,
-        "map": true
-      },
-      "govee": {
-        "path": true,
-        "map": true
-      },
-      "hcpss": {
-        "path": true,
-        "map": true
-      },
-      "throttle": {
-        "controller_requests": true
+      "client": true,
+      "govee": true,
+      "hcpss": true,
+      "rate_limit": {
+        "max_controller_requests": true
       }
     },
     "source": true,

@@ -7,6 +7,40 @@
         background-color: #111;
         color: #fff;
       }
+
+      #number-text {
+        position: fixed;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 5rem;
+        top: 0px;
+        left: 0px;
+        height: 100vh;
+        width: 100vw;
+        font-family: Consolas, monospace;
+      }
+
+      #number-text > .digit {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+
+        overflow: hidden;
+      }
+
+      #number-text > .digit > .digit-track {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        transition: transform 300ms ease-in-out;
+      }
+
+      #number-text > .digit > .digit-track > .character {
+        font-size: 10rem;
+      }
     </style>
 
     <script>
@@ -16,8 +50,10 @@
       window.imported = Object.freeze(JSON.parse(span.textContent));
     </script>
     <script type='module' src='/js/client.mjs'></script>
+    <script type='module' src='/js/display_number.mjs' defer></script>
   </head>
   <body>
     <pre id='output'></pre>
+    <div id='number-text'></div>
   </body>
 </html>
