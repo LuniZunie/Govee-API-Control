@@ -1,9 +1,11 @@
-import { Time, Angle, Coord, RGB, util_client, util, proto } from './utility.mjs';
+import { Time, Angle, GCS, RGB, Utility, proto } from './utility.mjs';
 proto.import('Number', 'Object', 'Array.prototype');
 
 import DisplayNumber from './display_number.mjs';
 
 const { data: { constant, config }, countdown } = window.imported;
+
+const utility = new Utility('client', config, constant);
 
 const testTime = { time: 0, init: Date.now() };
 window.setTestTime = function(hr = 'now', min = 0, sec = 0, ms = 0) {
@@ -17,7 +19,7 @@ window.setTestTime = function(hr = 'now', min = 0, sec = 0, ms = 0) {
 const output = document.getElementById('output');
 
 const memory = {
-  timer: Date.now() + countdown,
+  timer: new Date(countdown),
   sceneChange: { phase: null, time: 0, scene: null }
 };
 
@@ -33,21 +35,25 @@ const promises = {
       const promise = new Promise(res => callback = res);
       async function success(position) {
         const { latitude, longitude } = position.coords;
-        memory.location = { latitude, longitude };
         sessionStorage.setItem('location', JSON.stringify({ latitude, longitude }));
 
         const lookup = await fetch(`${constant.api.weather.location}/points/${latitude},${longitude}`)
-          .then(response => response.json()).then(data => console.log('Point: %o', data) || data.properties.observationStations)
-          .catch(error => console.error(error) || error400());
+          .then(res => res.json())
+          .then(data => console.log('Point: %o', data) || data.properties.observationStations)
+          .catch(err => console.error(err) || error400());
         if (lookup === undefined) return undefined;
 
         const stations = await fetch(lookup)
-          .then(response => response.json()).then(data => console.log('Stations: %o', data) || data.features)
-          .catch(error => console.error(error) || error400());
+          .then(res => res.json())
+          .then(data => console.log('Stations: %o', data) || data.features)
+          .catch(err => console.error(err) || error400());
         if (stations === undefined) return undefined;
 
         const station = stations[0];
-        console.log('Closest station: %o', `${station.properties.name} [${station.properties.stationIdentifier}] (${Coord.calc.dist(latitude, longitude, ...station.geometry.coordinates.reverse()).toFixed(2)} km)`);
+        const gcs1 = new GCS(latitude, longitude),
+              gcs2 = new GCS(...station.geometry.coordinates.reverse());
+
+        console.log('Closest station: %o', `${station.properties.name} [${station.properties.stationIdentifier}] (${gcs1.distance(gcs2).toFixed(2)} km)`);
         return callback(`${station.id}/observations/latest`);
       }
 
@@ -59,14 +65,15 @@ const promises = {
     } else return undefined;
   })(),
   init: (async function() {
-    return await fetch(util.getApiPath(config, 'govee', 'devices'), { method: 'GET' })
-      .then(response => response.json()).then(({ data }) => {
+    return await fetch(utility.getApiPath('govee', 'devices'), { method: 'GET' })
+      .then(res => res.json())
+      .then(({ data }) => {
         console.log('Initialization: %o', data);
         output.innerText = JSON.stringify(data, null, 2);
 
         return data;
       })
-      .catch(error => console.error(error) || error400());
+      .catch(err => console.error(err) || error400());
   })(),
 }, database = {};
 
@@ -90,28 +97,31 @@ async function updateCall(updatePromises, dev_mode = false) {
 
   const { phase, progress, sources } = await getPhase(date); // get current phase and progress
   if (phase === undefined) return; // skip if phase is undefined
+  else if (phase.id !== memory.sceneChange.phase) memory.sceneChange = { phase: phase.id, time: 0, scene: null }; // reset scene change if phase changes
+
 
   const display = getDisplayAccessor(phase), // get display accessor
         scenes = display('scenes'); // get scenes
 
-  if (scenes && (memory.sceneChange.time !== null && Date.now() >= memory.sceneChange.time)) { // scene change
+  if (scenes) { // scene change
+    if (memory.sceneChange.time === null || date < memory.sceneChange.time) return; // skip if scene change is not ready
+
     const scene = scenes.weightedRandom(scenes.map(s => s.weight ?? 1)), // get random scene based on weight
-          deviceScene = util_client.findScene(device, scene.name); // find scene in device capabilities
+          deviceScene = utility.findScene(device, scene.name); // find scene in device capabilities
 
     if (deviceScene === undefined) return console.error('Scene %o not found in device capabilities', scene.name);
 
     let end;
     if ('duration' in scene && 'min' in scene.duration && 'max' in scene.duration) {
-      const t = Time.from.Date(date),
-            tMn = Time.to.Date(Time.calc.add(t, Time.from.string(scene.duration.min)), date),
-            tMx = Time.to.Date(Time.calc.add(t, Time.from.string(scene.duration.max)), date);
+      const t = new Time(date),
+            tMn = +t.add(scene.duration.min),
+            tMx = +t.add(scene.duration.max);
 
-      end = new Date(Number.standardize(Math.random(), tMn, tMx) | 0);
+      end = new Date(Number.standardize(Math.random(), tMn, tMx));
     }
 
-    if (memory.sceneChange.scene === scene.name) return; // skip if same scene
-    else
-      return fetch(util.getApiPath(config, 'govee', 'controller'), {
+    if (memory.sceneChange.scene !== scene.name)
+      await fetch(utility.getApiPath('govee', 'controller'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -120,20 +130,21 @@ async function updateCall(updatePromises, dev_mode = false) {
           dev_mode,
         }),
       })
-        .then(response => response.json())
+        .then(res => res.json())
         .then(data => {
-          memory.timer = Date.now() + data.countdown;
+          memory.timer = new Date(data.countdown);
 
           memory.sceneChange.scene = scene.name;
           if (end) {
-            console.log('Duration: %s', end - date);
+            console.log(`${new Date().toLocaleString()}: %o scene duration`, Time.toText(end - date));
             memory.sceneChange.time = end;
           }
         })
         .catch(err => {
-          memory.timer = Date.now();
+          memory.timer = new Date();
           console.error(err);
         });
+    return;
   } else {
     memory.sceneChange.scene = null;
     memory.sceneChange.time = 0;
@@ -141,9 +152,9 @@ async function updateCall(updatePromises, dev_mode = false) {
       case 'sunlight > daytime':
       case 'sunlight > sunset': {
         const data = {
-          segment: util.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'segment'),
-          rgb: util.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'rgb'),
-          brightness: util.findCapability(device, 'segment_color_setting', 'segmentedBrightness').parameters.fields.find(f => f.fieldName === 'brightness'),
+          segment: utility.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'segment'),
+          rgb: utility.findCapability(device, 'segment_color_setting', 'segmentedColorRgb').parameters.fields.find(f => f.fieldName === 'rgb'),
+          brightness: utility.findCapability(device, 'segment_color_setting', 'segmentedBrightness').parameters.fields.find(f => f.fieldName === 'brightness'),
         };
 
         const segments = Array.from({ length: data.segment.elementRange.max - data.segment.elementRange.min }).map(() => ({}));
@@ -157,7 +168,7 @@ async function updateCall(updatePromises, dev_mode = false) {
               const constantRange = constant.script.temperature_to_rgb.temperature;
               const standard = Number.standardize(1 - normal, constantRange.min, constantRange.max);
 
-              const rgb = RGB.to.color(RGB.from.temp(standard));
+              const rgb = new RGB({ temp: standard }).number;
               config.device.segment.clockwise.bottom.forEach(i => segments[i].rgb = rgb);
             }
           }
@@ -182,7 +193,7 @@ async function updateCall(updatePromises, dev_mode = false) {
 
           const frac = Number.normalize(+sources.luminary.properties.data.fracillum.replace(/\D/g, ''), 0, 100);
           segment.brightness = Number.standardize(frac, data.brightness.range.min, data.brightness.range.max, data.brightness.range.precision);
-          segment.rgb = RGB.to.color(display('color', 'moon'));
+          segment.rgb = new RGB(display('color', 'moon')).number;
         }
 
         if ('daytime > sunlight' in progress) { // sun segment control
@@ -192,11 +203,11 @@ async function updateCall(updatePromises, dev_mode = false) {
           })(config.device.segment.clockwise, progress['daytime > sunlight']);
 
           segment.brightness = data.brightness.range.max;
-          segment.rgb = RGB.to.color(display('color', 'sun'));
+          segment.rgb = new RGB(display('color', 'sun')).number;
         }
 
         { // cloud segment control
-          const clouds = util_client.getCloudData(constant, sources.weather.cloudLayers);
+          const clouds = utility.getCloudData(sources.weather.cloudLayers);
           const clearMinMax = clouds
             .map(a => [ 1 - a.range.min, 1 - a.range.max ])
             .reduce((p, n) => [ p[0] * n[0], p[1] * n[1] ], [ 1, 1 ]);
@@ -205,18 +216,18 @@ async function updateCall(updatePromises, dev_mode = false) {
             if (segment.rgb === undefined) {
               let rgb, brightness;
 
-              const clear = Number.standardize(Math.random(), clearMinMax[0], clearMinMax[1]);
+              const clear = Number.standardize(Math.random(), ...clearMinMax);
               if (Math.random() < clear) { // clear sky segment
-                rgb = RGB.to.color(display('color', 'sky'));
+                rgb = new RGB(display('color', 'sky'));
                 brightness = 'sunset' in progress ? 1 - (progress.sunset * 0.9) : 1;
               } else { // cloud segment
-                rgb = RGB.to.color(display('color', 'cloud'));
+                rgb = new RGB(display('color', 'cloud'));
 
                 const pm = Number.standardize(Math.random(), -0.1, 0.1);
                 brightness = Number.standardize(1 - clear + pm, 0.7, 0.9);
               }
 
-              segment.rgb = rgb;
+              segment.rgb = rgb.number;
               segment.brightness = Number.standardize(brightness, data.brightness.range.min, data.brightness.range.max, data.brightness.range.precision);
             }
           }
@@ -244,17 +255,18 @@ async function updateCall(updatePromises, dev_mode = false) {
               }, []);
 
         if (capabilities.length)
-          return fetch(util.getApiPath(config, 'govee', 'controller'), {
+          await fetch(utility.getApiPath('govee', 'controller'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sku: device.sku, device: device.device, capabilities, process: 'sequential', dev_mode }),
           })
             .then(response => response.json())
-            .then(data => { memory.timer = Date.now() + data.countdown; })
+            .then(data => { memory.timer = new Date(data.countdown); })
             .catch(err => {
               console.error(err);
-              memory.timer = Date.now();
+              memory.timer = new Date();
             });
+        return;
       } break;
     }
   }
@@ -263,12 +275,17 @@ async function updateCall(updatePromises, dev_mode = false) {
 }
 
 async function update(dev_mode = false) {
+  if (memory.updateTimer === null) return console.warn('Skipping update due to existing update timer');
+  memory.updateTimer = null;
+
   const updatePromises = [];
   await updateCall(updatePromises, dev_mode);
 
   await Promise.allSettled(updatePromises);
 
-  memory.updateTimer = setTimeout(update, Math.max(memory.timer - Date.now(), 3000)); // minimum of 3000ms delay to not overwork CPU and server
+  const countdown = Math.max(memory.timer - Date.now(), 3000); // minimum of 3000ms delay to not overwork CPU and server
+  memory.timer = new Date(Date.now() + countdown);
+  memory.updateTimer = setTimeout(update, countdown);
 }
 memory.updateTimer = setTimeout(update, memory.timer - Date.now());
 
@@ -277,8 +294,8 @@ async function getSchoolData() {
   const d = date.getDay(), m = date.getMonth() + 1;
   if (d === 0 || d === 6 || m === 7) return false; // Saturday, Sunday, or July
 
-  const fetcher = async path => fetch(util.getApiPath(config, 'hcpss', path), { method: 'GET' })
-    .then(response => response.text())
+  const fetcher = async path => fetch(utility.getApiPath('hcpss', path), { method: 'GET' })
+    .then(res => res.text())
     .then(html => new DOMParser().parseFromString(html, 'text/html'));
 
   const promises = {
@@ -303,11 +320,7 @@ async function getSchoolData() {
   if (status === false) return null; // schools closed
   else if (status === true) status = '+0'; // normal operating day
 
-  const t = Time.from.string(config.source.hcpss.start.time), // normal start time
-        Δt1 = Time.from.string(config.source.hcpss.start.offset), // wake up offset
-        Δt2 = Time.from.string(status); // delayed opening time
-
-  return Time.to.Date(Time.calc.add(t, Δt1, Δt2), date); // return start time
+  return new Time(config.source.hcpss.start.time).add(config.source.hcpss.start.offset, status).toDate(date); // return start time
 }
 
 async function getLuminaryData(date = new Date()) {
@@ -315,23 +328,21 @@ async function getLuminaryData(date = new Date()) {
 
   const params = new URLSearchParams({ date: date.toISOString().split('T')[0], coords: `${latitude},${longitude}`, tz: date.getTimezoneOffset() / -60});
   const data = await fetch(`${constant.api.luminary.location}?${params}`)
-    .then(response => response.json())
-    .catch(error => console.error(error));
+    .then(res => res.json())
+    .catch(err => console.error(err));
 
   const get = (function(type) {
     const data = this.data.properties.data[`${type}data`],
           conditions = config.source.luminary[type];
 
     const check = (o, k, phen, t, con) => {
-      if (con.phenomenon === phen) {
-        const Δt = Time.from.string(con.offset);
-        o[k] = Time.to.Date(Time.calc.add(t, Δt), date);
-      }
+      if (con.phenomenon === phen)
+        o[k] = t.add(con.offset).toDate(date);
     };
 
     const rtn = { rise: {}, set: {} };
     for (let { phen, time } of data) {
-      time = Time.from.string(time);
+      time = new Time(time);
       check(rtn.rise, 'start', phen, time, conditions.rise.start); check(rtn.rise, 'end', phen, time, conditions.rise.end);
       check(rtn.set, 'start', phen, time, conditions.set.start); check(rtn.set, 'end', phen, time, conditions.set.end);
     }
@@ -355,16 +366,18 @@ async function getPhase(date = new Date()) {
     weather: getWeatherData(),
   };
 
-  const fulfilled = await Promise.allSettled(Object.values(promises)),
-        sources = Object.fromEntries(Object.keys(promises).map((k, i) => [ k, fulfilled[i].value ]));
+  const sources = await Promise.all(Object.values(promises))
+    .then(data => Object.fromEntries(Object.keys(promises).map((k, i) => [ k, data[i] ])))
+    .catch(err => console.error(err));
+  if (sources === undefined) return undefined;
 
   const progress = {};
   const checkCondition = (function(group, con) {
     const id = group + (con.name ? ` > ${con.name}` : '');
     if ('time' in con) {
       let { start, end } = con.time;
-      start = this.var.time[start] ?? Time.to.Date(Time.from.string(start));
-      end = this.var.time[end] ?? Time.to.Date(Time.from.string(end));
+      start = this.var.time[start] ?? new Time(start).toDate();
+      end = this.var.time[end] ?? new Time(end).toDate();
 
       if (start > end && !(date >= start || date < end)) return false;
       else if (start <= end && !(date >= start && date < end)) return false;

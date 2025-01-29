@@ -1,4 +1,6 @@
-import { util } from './utility.mjs';
+import { Utility } from './utility.mjs';
+const utility = new Utility();
+
 const digits = 6;
 
 const getNumberString = number => number.toString().padStart(digits, '0'),
@@ -8,7 +10,7 @@ const getNumberString = number => number.toString().padStart(digits, '0'),
 
 function createTrackHalf(track, trackHalf) {
   for (let i = 0; i < 10; i++) {
-    const number = util.createElement('div', [ trackHalf, 'character', `number-${i}` ], i);
+    const number = utility.createElement('div', [ trackHalf, 'character', `number-${i}` ], i);
     if (trackHalf === 'upper' && i === 0) number.classList.add('active');
 
     track.appendChild(number);
@@ -17,8 +19,8 @@ function createTrackHalf(track, trackHalf) {
 
 function init() {
   for (let i = 0; i < digits; i++) {
-    const digit = util.createElement('div', 'digit'),
-          track = util.createElement('div', 'digit-track');
+    const digit = utility.createElement('div', 'digit'),
+          track = utility.createElement('div', 'digit-track');
 
     digit.appendChild(track);
     createTrackHalf(track, 'upper'); createTrackHalf(track, 'lower');

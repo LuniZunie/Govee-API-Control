@@ -1,20 +1,72 @@
-import { util_app, util, proto } from './src/js/utility.mjs';
-proto.import('Number', 'Object');
+import { Utility, proto } from './src/js/utility.mjs';
+proto.import('Array.prototype', 'Number', 'Object');
 
 import fs from 'fs';
 
 import fetch from 'node-fetch'; import express from 'express';
 import cors from 'cors'; import bodyParser from 'body-parser';
 
-const clientData = {},
-      constant  = util_app.readDataFile(fs, 'constant', 'data/constant.json', clientData),
-      config = util_app.readDataFile(fs, 'config', constant.file.config, clientData),
-      secret = util_app.readDataFile(fs, 'secret', constant.file.secret, clientData);
+const clientData = {};
+const [ constant, config, secret ] = (function(utility) {
+  const constant = utility.readDataFile(fs, 'constant', 'data/constant.json', clientData),
+        config = utility.readDataFile(fs, 'config', constant.file.config, clientData),
+        secret = utility.readDataFile(fs, 'secret', constant.file.secret, clientData);
 
-const rateLimit = { end: -1, time: 0 };
+  return [ constant, config, secret ];
+})(new Utility('app'));
+const utility = new Utility('app', config, constant);
+
+class RateHandler {
+  #req = [];
+
+  #wait; #maxReq;
+  constructor(waitTime, maxReq) {
+    if (Number.isFinite(waitTime) && waitTime >= 0) this.#wait = waitTime;
+    else throw new Error('Invalid wait time');
+
+    if (Number.isInteger(maxReq) && maxReq >= 1) this.#maxReq = maxReq;
+    else throw new Error('Invalid maximum requests');
+  }
+
+  #update() {
+    const now = Date.now();
+    this.#req = this.#req.filter(req => req > now);
+  }
+
+  get waitTime() { return this.#wait; }
+  get maxRequests() { return this.#maxReq; }
+
+  get requests() {
+    this.#update();
+    return this.#req.length;
+  }
+
+  countdown(rem = 0) {
+    this.#update();
+    rem = Number.clamp(rem, 0, this.#req.length);
+
+    const t = this.#req[this.#req.length - rem - 1] ?? Date.now();
+    return new Date(t);
+  }
+
+  add() {
+    this.#update();
+    if (this.#req.length < this.#maxReq) {
+      const t = this.#req.last ?? Date.now();
+      this.#req.push(t + this.#wait);
+      return true;
+    } else return false;
+  }
+
+  reset() {
+    this.#req = [];
+  }
+}
+
+let rateLimit;
 {
   const { quota, precision: pr } = config.api.rate_limit;
-  rateLimit.time = Math.round((86400000 / quota + pr / 2) / pr) * pr;
+  rateLimit = new RateHandler(Math.round((86400000 / quota + pr / 2) / pr) * pr, config.api.rate_limit.max_controller_requests);
 }
 
 async function getDevices() {
@@ -22,7 +74,11 @@ async function getDevices() {
     method: 'GET',
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
   })
-    .then(r => r.json()).then(data => data.data)
+    .then(res => res.json())
+    .then(data => {
+      rateLimit.add();
+      return data.data;
+    })
     .catch(err => ({ error: err.message }));
 }
 
@@ -30,49 +86,59 @@ async function getData(sku, device, path) {
   return await fetch(`${constant.api.govee.location}/device/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
-    body: JSON.stringify({ requestId: util_app.createUuid(), payload: { sku, device } }),
+    body: JSON.stringify({ requestId: utility.createUuid(), payload: { sku, device } }),
   })
-    .then(r => r.json()).then(data => data.payload.capabilities)
+    .then(res => res.json())
+    .then(data => {
+      rateLimit.add();
+      return data.payload.capabilities;
+    })
     .catch(err => ({ error: err.message }));
 }
 
 let init = {};
 async function INIT() {
-  const devices = await getDevices(); if (devices.error) return console.error(devices.error) || false;
+  const devices = await getDevices();
+  if (devices.error) return console.error(devices.error) || false;
+
   init = { devices, states: [], lookup: {} };
   for (let i = 0; i < devices.length; i++) {
     const device = devices[i];
-    const { sku, device: macAddr } = device ?? {}; if (sku === undefined || macAddr === undefined) return console.error('Invalid device') || false;
+    const { sku, device: macAddr } = device ?? {};
+    if (sku === undefined || macAddr === undefined) return console.error('Invalid device') || false;
 
     Object.safeSet(init.lookup, sku, macAddr, i);
 
     {
-      const i = util.findCapabilityIndex(device, 'dynamic_scene', 'lightScene');
+      const i = utility.findCapabilityIndex(device, 'dynamic_scene', 'lightScene');
       if (i) {
-        const scene = await getData(sku, macAddr, 'scenes'); if (scene.error) return console.error(scene.error) || false;
-        device.capabilities[i] = scene[0];
+        const scene = await getData(sku, macAddr, 'scenes');
+        if (scene.error) return console.error(scene.error) || false;
+        else device.capabilities[i] = scene[0];
       }
     }
 
     {
-      const i = util.findCapabilityIndex(device, 'dynamic_scene', 'diyScene');
+      const i = utility.findCapabilityIndex(device, 'dynamic_scene', 'diyScene');
       if (i) {
-        const scene = await getData(sku, macAddr, 'diy-scenes'); if (scene.error) return console.error(scene.error) || false;
-        device.capabilities[i] = scene[0];
+        const scene = await getData(sku, macAddr, 'diy-scenes');
+        if (scene.error) return console.error(scene.error) || false;
+        else device.capabilities[i] = scene[0];
       }
     }
 
-    const state = await getData(sku, macAddr, 'state'); if (state.error) return console.error(state.error) || false;
-    init.states.push(state);
+    const state = await getData(sku, macAddr, 'state');
+    if (state.error) return console.error(state.error) || false;
+    else init.states.push(state);
   }
 
   return true;
 }
 await INIT();
 
-const getCountdown = () => Number.clamp(rateLimit.end - Date.now(), 0),
-      formatResponse = (data, flat = false) => flat ? { ...data, countdown: getCountdown() } : { data, countdown: getCountdown() },
-      aboveRateLimit = body => !(config.api.rate_limit.dev_mode && body.dev_mode) && getCountdown() > 0;
+const formatResponse = (data, flat = false) => flat ? { ...data, countdown: rateLimit.countdown() } : { data, countdown: rateLimit.countdown() },
+      inDevMode = body => config.api.rate_limit.dev_mode && body.dev_mode,
+      aboveRateLimit = body => !inDevMode(body) && rateLimit.countdown() > new Date();
 
 const app = express();
 app.use(cors()); app.use(bodyParser.json());
@@ -84,8 +150,9 @@ app.get('/', (req, res) => {
   res.render('index', { json: JSON.stringify(formatResponse(clientData)) });
 });
 
-app.use(util.getApiPath(config, 'govee'), async (req, res) => {
-  const { method, path, body } = req; if (!config.api.govee.methods.includes(method)) return res.status(400).json(formatResponse({ error: 'Invalid method' }, 1));
+app.use(utility.getApiPath('govee'), async (req, res) => {
+  const { method, path, body } = req;
+  if (!config.api.govee.methods.includes(method)) return res.status(400).json(formatResponse({ error: 'Invalid method' }, 1));
 
   switch (path) { // non-rate limited calls
     case config.api.govee.devices.path: return res.status(200).json(formatResponse(init));
@@ -94,14 +161,19 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
     } break;
   }
 
+  if (inDevMode(body)) rateLimit.reset();
+
   switch (path) { // rate limited calls
     case config.api.govee.refresh_devices.path: {
       if (await INIT()) return res.status(200).json(formatResponse(init));
       return res.status(500).json(formatResponse({ error: 'Failed to re-initialize' }, 1));
     } break;
     case config.api.govee.controller.path: {
-      const { sku, device: macAddr, capabilities } = body ?? {}; if (sku === undefined || macAddr === undefined || !Array.isArray(capabilities)) return res.status(400).json(formatResponse({ error: 'Invalid body' }, 1));
-      const process = (body ?? {}).process ?? 'parallel'; if (process !== 'parallel' && process !== 'sequential') return res.status(400).json(formatResponse({ error: 'Invalid process' }, 1));
+      const { sku, device: macAddr, capabilities } = body ?? {};
+      if (sku === undefined || macAddr === undefined || !Array.isArray(capabilities)) return res.status(400).json(formatResponse({ error: 'Invalid body' }, 1));
+
+      const process = Object.safeGet(body, 'process') ?? 'parallel';
+      if (process !== 'parallel' && process !== 'sequential') return res.status(400).json(formatResponse({ error: 'Invalid process' }, 1));
 
       const capsObj = capabilities.reverse().reduce(([ mapped, existing ], cap) => {
         const capId = JSON.stringify(cap);
@@ -119,8 +191,11 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
 
       const caps = capsObj[0];
       if (sku in init.lookup) {
-        const index = init.lookup[sku][macAddr]; if (index === undefined) return res.status(400).json(formatResponse({ error: 'Invalid device' }, 1));
-        const device = init.devices[index]; if (device === undefined) return res.status(400).json(formatResponse({ error: 'Invalid device' }, 1));
+        const index = init.lookup[sku][macAddr];
+        if (index === undefined) return res.status(400).json(formatResponse({ error: 'Invalid device' }, 1));
+
+        const device = init.devices[index];
+        if (device === undefined) return res.status(400).json(formatResponse({ error: 'Invalid device' }, 1));
 
         let apiCalls = 0;
         const rtn = [], promises = [];
@@ -131,8 +206,10 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
           const { dup, cap } = caps[i];
           if (dup) { setReturn({ status: 0b010, message: 'failure#duplicate', data: { error: 'Duplicated capability requested' } }); continue; }
 
-          const { type, instance, value } = cap ?? {}; if (type === undefined || instance === undefined) return res.status(400).json(formatResponse({ error: 'Invalid capability' }, 1));
-          const hasCap = util.findCapability(device, type, instance);
+          const { type, instance, value } = cap ?? {};
+          if (type === undefined || instance === undefined) return res.status(400).json(formatResponse({ error: 'Invalid capability' }, 1));
+
+          const hasCap = utility.findCapability(device, type, instance);
           if (!hasCap) { setReturn({ status: 0b100, message: 'failure#missing_capability', data: { error: 'Device does not have requested capability' } }); continue; }
           else apiCalls++;
 
@@ -141,10 +218,18 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
           const promise = fetch(constant.api.govee.location + cap.path, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Govee-API-Key': secret.govee.api_key },
-            body: util_app.createGoveeBody(device, cap),
+            body: utility.createGoveeBody(device, cap),
           })
-            .then(r => r.json()).then(data => setReturn({ status: 0b001, message: 'success', data }))
-            .catch(err => console.error(err) || setReturn({ status: 0b110, message: 'failure#fetch_error', data: err }));
+            .then(r => r.json())
+            .then(data => {
+              rateLimit.add();
+              if (data.code === 200) setReturn({ status: 0b001, message: 'success', data });
+              else setReturn({ status: 0b101, message: 'failure#api_error', data });
+            })
+            .catch(err => {
+              console.error(err);
+              setReturn({ status: 0b110, message: 'failure#fetch_error', data: err });
+            });
 
           if (process === 'parallel') promises.push(promise); // execute all fetch requests ASAP
           else await promise; // wait for fetch request to finish before proceeding to next fetch request
@@ -152,7 +237,6 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
 
         if (process === 'parallel') await Promise.allSettled(promises); // wait for fetch requests to finish
 
-        rateLimit.end = Date.now() + rateLimit.time * apiCalls;
         return res.status(200).json(formatResponse(rtn));
       } else return res.status(400).json(formatResponse({ error: 'Invalid SKU' }, 1));
     } break;
@@ -160,8 +244,9 @@ app.use(util.getApiPath(config, 'govee'), async (req, res) => {
   }
 });
 
-app.use(util.getApiPath(config, 'hcpss'), async (req, res) => {
-  const { method, path, body } = req; if (!config.api.hcpss.methods.includes(method)) return res.status(400).json(formatResponse({ error: 'Invalid method' }, 1));
+app.use(utility.getApiPath('hcpss'), async (req, res) => {
+  const { method, path, body } = req;
+  if (!config.api.hcpss.methods.includes(method)) return res.status(400).json(formatResponse({ error: 'Invalid method' }, 1));
 
   switch (path) {
     case config.api.hcpss.calendar.path: {
